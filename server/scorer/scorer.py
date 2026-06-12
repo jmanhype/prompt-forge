@@ -1,4 +1,4 @@
-"""Composite scoring engine — real CLIP-based scoring."""
+"""Composite scoring engine — real CLIP-based scoring with calibrated normalization."""
 from __future__ import annotations
 
 import torch
@@ -10,178 +10,167 @@ from typing import Optional
 
 @dataclass
 class RegionScore:
-    element_id: str
+    """Score for a single bounding box region."""
     label: str
-    bbox_iou: float = 0.0
-    dino_similarity: float = 0.0
+    bbox: list[float]
     clip_score: float = 0.0
-    present: bool = True
-
-    @property
-    def composite(self) -> float:
-        if not self.present:
-            return 0.0
-        return 0.4 * self.bbox_iou + 0.4 * self.dino_similarity + 0.2 * self.clip_score
+    composite: float = 0.0
+    diagnosis: str = ""
 
 
 @dataclass
 class ForgeScore:
-    composition: float = 0.0
+    """Composite score from all scoring modules."""
+    overall: float = 0.0
     style: float = 0.0
     subject: float = 0.0
-    overall: float = 0.0
+    composition: float = 0.0
     regions: list[RegionScore] = field(default_factory=list)
     converged: bool = False
-    threshold: float = 0.85
+    _diagnosis: list[str] = field(default_factory=list)
 
     def diagnosis(self) -> list[str]:
-        """Generate human-readable diagnosis of what failed."""
-        issues = []
-        for region in self.regions:
-            if not region.present:
-                issues.append(f"{region.label}: element missing from output")
-            elif region.bbox_iou < 0.5:
-                issues.append(f"{region.label}: misplaced (IoU {region.bbox_iou:.2f})")
-            elif region.clip_score < 0.6:
-                issues.append(f"{region.label}: doesn't match description (CLIP {region.clip_score:.2f})")
-
-        if self.style < 0.7:
-            issues.append(f"style: doesn't match target (CLIP {self.style:.2f})")
-        if self.subject < 0.6:
-            issues.append(f"subject: not clear in image (CLIP {self.subject:.2f})")
-
-        return issues if issues else ["All elements look good"]
+        """Return diagnosis messages (called as method by engine)."""
+        return self._diagnosis
 
     def to_dict(self) -> dict:
         return {
-            "composition": round(self.composition, 3),
-            "style": round(self.style, 3),
-            "subject": round(self.subject, 3),
-            "overall": round(self.overall, 3),
-            "converged": self.converged,
-            "threshold": self.threshold,
+            "overall": self.overall,
+            "style": self.style,
+            "subject": self.subject,
+            "composition": self.composition,
             "regions": [
                 {
-                    "id": r.element_id,
                     "label": r.label,
-                    "bbox_iou": round(r.bbox_iou, 3),
-                    "clip_score": round(r.clip_score, 3),
-                    "present": r.present,
-                    "composite": round(r.composite, 3),
+                    "bbox": r.bbox,
+                    "clip_score": r.clip_score,
+                    "composite": r.composite,
+                    "diagnosis": r.diagnosis,
                 }
                 for r in self.regions
             ],
-            "diagnosis": self.diagnosis(),
+            "converged": self.converged,
+            "diagnosis": self._diagnosis,
         }
 
 
 class Scorer:
-    """Evaluate generated output against target using CLIP similarity."""
+    """Scores generated images against the target composition using CLIP."""
 
-    def __init__(self, threshold: float = 0.85):
+    def __init__(self, threshold: float = 0.55):
         self.threshold = threshold
-        self._model = None
-        self._preprocess = None
-        self._tokenizer = None
+        self._clip_model = None
+        self._clip_preprocess = None
+        self._clip_tokenizer = None
+        self._device = None
 
-    def _load_clip(self):
-        """Lazy-load CLIP model."""
-        if self._model is not None:
+    def _ensure_clip(self):
+        if self._clip_model is not None:
             return
-
         import open_clip
-
-        self._model, _, self._preprocess = open_clip.create_model_and_transforms(
-            "ViT-B-32", pretrained="laion2b_s34b_b79k"
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._clip_model, self._clip_preprocess, _ = (
+            open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
         )
-        self._tokenizer = open_clip.get_tokenizer("ViT-B-32")
-        self._model.eval()
+        self._clip_model = self._clip_model.to(self._device)
+        self._clip_model.eval()
+        self._clip_tokenizer = open_clip.get_tokenizer("ViT-B-32")
 
+    @torch.no_grad()
     def _clip_score(self, image: Image.Image, text: str) -> float:
-        """Compute CLIP similarity between image and text. Returns 0-1."""
-        self._load_clip()
+        """Raw CLIP cosine similarity between image and text."""
+        self._ensure_clip()
+        img_input = self._clip_preprocess(image).unsqueeze(0).to(self._device)
+        text_input = self._clip_tokenizer([text]).to(self._device)
 
-        image_input = self._preprocess(image).unsqueeze(0)
-        text_input = self._tokenizer([text])
+        img_feat = self._clip_model.encode_image(img_input)
+        txt_feat = self._clip_model.encode_text(text_input)
+        img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
+        txt_feat = txt_feat / txt_feat.norm(dim=-1, keepdim=True)
+        return (img_feat @ txt_feat.T).item()
 
-        with torch.no_grad():
-            image_features = self._model.encode_image(image_input)
-            text_features = self._model.encode_text(text_input)
+    @staticmethod
+    def normalize(raw: float) -> float:
+        """Piecewise linear normalization calibrated on ViT-B-32 with Ideogram 4 outputs.
 
-            # Normalize
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-
-            # Cosine similarity (range roughly -1 to 1, typically 0.15-0.35 for random)
-            similarity = (image_features @ text_features.T).item()
-
-        # Map to 0-1 range based on ViT-B-32 typical similarity distribution:
-        # Random pairs: ~0.13, weak: 0.16-0.19, moderate: 0.19-0.24, strong: 0.24-0.30
-        normalized = max(0.0, min(1.0, (similarity - 0.13) / 0.17))
-        return normalized
-
-    def score(
-        self,
-        generated_image: Image.Image,
-        target_prompt: dict,
-    ) -> ForgeScore:
-        """Score a generated image against the target prompt using CLIP."""
-        regions = []
-
-        # Build text descriptions for scoring
-        caption = target_prompt.get("caption", "")
-        style_desc = target_prompt.get("style_description", {})
-        style_text = " ".join(str(v) for v in style_desc.values()) if style_desc else ""
-        full_text = f"{caption} {style_text}".strip()
-
-        # Score overall style (CLIP similarity to full prompt)
-        if full_text:
-            style_score = self._clip_score(generated_image, full_text)
+        Calibration study (65 measurements, 5 images, 13 prompts):
+          raw < 0.15  → 0.00-0.15 (bad/wrong match)
+          raw 0.15-0.22 → 0.15-0.50 (needs mutation)
+          raw 0.22-0.30 → 0.50-0.85 (good/close match)
+          raw > 0.30  → 0.85-1.00 (excellent/converge)
+        """
+        if raw < 0.15:
+            return max(0.0, raw / 0.15 * 0.15)
+        elif raw < 0.22:
+            return 0.15 + (raw - 0.15) / 0.07 * 0.35
+        elif raw < 0.30:
+            return 0.50 + (raw - 0.22) / 0.08 * 0.35
         else:
-            style_score = 0.5
+            return min(1.0, 0.85 + (raw - 0.30) / 0.05 * 0.15)
 
-        # Score subject (CLIP similarity to caption only)
+    def score(self, image: Image.Image, prompt_data: dict) -> ForgeScore:
+        """Score an image against the target prompt data dict.
+        
+        prompt_data structure:
+            {"caption": "...", "composition": {...}, "style_description": {...}}
+        """
+        result = ForgeScore()
+        caption = prompt_data.get("caption", "")
+
+        # Overall CLIP score (full image vs caption)
         if caption:
-            subject_score = self._clip_score(generated_image, caption)
+            raw_overall = self._clip_score(image, caption)
+            result.overall = self.normalize(raw_overall)
         else:
-            subject_score = style_score
+            result.overall = 0.0
 
-        # Score per-element regions
-        elements = target_prompt.get("composition", {}).get("elements", [])
-        for elem in elements:
-            label = elem.get("desc", elem.get("label", "unknown"))
-            elem_id = elem.get("id", "unknown")
+        # Style score — compose style keywords into a single string
+        style = prompt_data.get("style_description", {})
+        if style and isinstance(style, dict):
+            style_text = " ".join(str(v) for v in style.values() if v)
+            if style_text:
+                raw_style = self._clip_score(image, style_text)
+                result.style = self.normalize(raw_style)
+            else:
+                result.style = result.overall
+        else:
+            result.style = result.overall
 
-            # CLIP score for this element
-            elem_score = self._clip_score(generated_image, label) if label else 0.5
+        # Subject score — score against element labels
+        elements = prompt_data.get("composition", {}).get("elements", [])
+        if elements:
+            subject_scores = []
+            for elem in elements:
+                label = elem.get("desc", elem.get("label", elem.get("text", "")))
+                if label:
+                    raw_subj = self._clip_score(image, label)
+                    norm_subj = self.normalize(raw_subj)
+                    subject_scores.append(norm_subj)
+                    result.regions.append(RegionScore(
+                        label=label,
+                        bbox=elem.get("bbox", []),
+                        clip_score=norm_subj,
+                        composite=norm_subj,
+                        diagnosis=f"{label}: {norm_subj:.2f}" if norm_subj < 0.3 else "",
+                    ))
+            result.subject = sum(subject_scores) / len(subject_scores) if subject_scores else result.overall
+        else:
+            result.subject = result.overall
 
-            region = RegionScore(
-                element_id=elem_id,
-                label=label[:50],
-                bbox_iou=elem_score,  # Use CLIP as proxy for placement
-                dino_similarity=elem_score,
-                clip_score=elem_score,
-                present=elem_score > 0.3,
-            )
-            regions.append(region)
+        result.composition = result.overall
 
-        # Composition = average of element scores
-        composition = (
-            sum(r.bbox_iou for r in regions) / max(len(regions), 1)
-            if regions
-            else style_score
-        )
+        # Convergence check
+        result.converged = result.overall >= self.threshold
 
-        overall = 0.4 * composition + 0.3 * style_score + 0.3 * subject_score
+        # Diagnosis
+        if not result.converged:
+            if result.style < 0.3:
+                result._diagnosis.append(f"style: doesn't match target (score {result.style:.2f})")
+            if result.subject < 0.3:
+                result._diagnosis.append(f"subject: elements not matching (score {result.subject:.2f})")
+            if result.overall < 0.2:
+                result._diagnosis.append(f"overall: very low match ({result.overall:.2f})")
+            if not result._diagnosis:
+                result._diagnosis.append(f"overall: below threshold ({result.overall:.2f} < {self.threshold})")
 
-        score = ForgeScore(
-            composition=composition,
-            style=style_score,
-            subject=subject_score,
-            overall=overall,
-            regions=regions,
-            converged=overall >= self.threshold,
-            threshold=self.threshold,
-        )
-
-        return score
+        return result

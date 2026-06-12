@@ -113,7 +113,7 @@ from pydantic import BaseModel
 class ForgeRequest(BaseModel):
     description: str = ""
     max_iterations: int = 5
-    threshold: float = 0.85
+    threshold: float = config.CONVERGENCE_THRESHOLD
 
 @app.post("/api/forge")
 async def start_forge(
@@ -129,16 +129,16 @@ async def start_forge(
     # Prefer JSON body, fall back to form data
     desc = ""
     max_iter = 5
-    thresh = 0.85
+    thresh = config.CONVERGENCE_THRESHOLD
     
     if request:
         desc = request.description or description
         max_iter = request.max_iterations if request.max_iterations else (max_iterations or 5)
-        thresh = request.threshold if request.threshold else (threshold or 0.85)
+        thresh = request.threshold if request.threshold else (threshold or config.CONVERGENCE_THRESHOLD)
     else:
         desc = description
         max_iter = max_iterations or 5
-        thresh = threshold or 0.85
+        thresh = threshold or config.CONVERGENCE_THRESHOLD
     
     image = None
     if file:

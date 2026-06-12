@@ -14,9 +14,10 @@ class TestCapabilities:
         caps = ComfyUICapabilities(has_gligen=True, has_attention_couple=True)
         assert caps.best_strategy == "gligen"
     
-    def test_attention_couple_fallback(self):
+    def test_attention_couple_not_used(self):
+        # attention_couple removed from best_strategy — ideogram4/flux/gligen/mega_prompt
         caps = ComfyUICapabilities(has_attention_couple=True)
-        assert caps.best_strategy == "attention_couple"
+        assert caps.best_strategy == "mega_prompt"  # falls through to default
     
     def test_not_connected(self):
         caps = ComfyUICapabilities(connected=False)
