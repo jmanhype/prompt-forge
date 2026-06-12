@@ -94,7 +94,7 @@ class FlorenceAnalyzer:
         od_data = self._parse_response(od_resp, "<OD>", (w, h))
         
         bboxes = od_data.get("bboxes", [])
-        labels = od_data.get("bboxes_labels", [])
+        labels = od_data.get("labels", [])  # Key is "labels", not "bboxes_labels"
         
         for i, (bbox, label) in enumerate(zip(bboxes, labels)):
             # Normalize to 0-1
