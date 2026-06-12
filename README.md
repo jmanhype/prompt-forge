@@ -81,6 +81,21 @@ Frontend (Vanilla JS) ←→ FastAPI Server
                               Your ComfyUI Instance
 ```
 
+## Real-World Benchmark: Atomic Breath on Ideogram 4
+
+The workflow in `workflows/templates/ideogram4_lora.json` was validated on June 10, 2026 using the Ektachrome Style LoRA v1 trained on Ideogram 4 FP8. We tested 3 approaches to generate Godzilla with atomic breath:
+
+| Approach | Denoise | Result |
+|----------|---------|--------|
+| txt2img | 1.0 | ✅ All elements present |
+| img2img | 0.85 | ✅ All elements, composition anchored to reference |
+| No LoRA (control) | 1.0 | ✅ Atomic breath works natively |
+| img2img | 0.65 | ❌ Too conservative, no beam generated |
+
+**Key finding:** For adding new elements (effects, beams, objects), use txt2img or img2img @ 0.85+. For style transfer only, img2img @ 0.4-0.6 works.
+
+Full benchmark: [docs/atomic-breath-benchmark.md](docs/atomic-breath-benchmark.md)
+
 ## Acknowledgments
 
 - Inspired by [cocktailpeanut/image-to-prompt](https://github.com/cocktailpeanut/image-to-prompt) — showed that local image-to-prompt tools can go viral
