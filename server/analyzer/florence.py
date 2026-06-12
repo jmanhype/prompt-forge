@@ -50,14 +50,17 @@ class FlorenceAnalyzer:
             self.model_id, trust_remote_code=True
         )
         self._model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, trust_remote_code=True, torch_dtype=dtype
+            self.model_id, trust_remote_code=True, torch_dtype=dtype,
+            attn_implementation="eager",
         ).to(self._device)
         self._model.eval()
     
     @torch.no_grad()
     def _run_task(self, image: Image.Image, task: str, text: str = "") -> str:
         self._load_model()
-        inputs = self._processor(text=text, images=image, return_tensors="pt")
+        # Florence-2 uses the task token as the text prompt
+        prompt_text = text if text else task
+        inputs = self._processor(text=prompt_text, images=image, return_tensors="pt")
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
         
         ids = self._model.generate(
