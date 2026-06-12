@@ -92,37 +92,110 @@ class WorkflowCompiler:
         return workflow
 
     def _build_prompt_text(self, prompt: dict, lora_config: Optional[dict]) -> str:
-        """Build a natural language prompt from structured JSON data."""
-        parts = []
-
-        # LoRA trigger words first
+        """Build Ideogram 4 native JSON prompt from structured data.
+        
+        Ideogram 4's Qwen3VL CLIP loader parses structured JSON with:
+        - high_level_description: 1-2 sentence overview
+        - style_description: aesthetics, lighting, medium, color palette
+        - compositional_deconstruction: background + elements with bboxes
+        
+        This gives much better composition control and avoids safety filter
+        false-positives from ambiguous plain text.
+        """
+        import json as _json
+        
+        # Build style_description
+        style = prompt.get("style_description", {})
+        if not style:
+            # Infer from prompt data or use sensible defaults
+            style = {
+                "aesthetics": "professional photography, sharp detail, natural tones",
+                "lighting": "soft ambient lighting",
+                "medium": "photograph",
+                "color_palette": ["#FFFFFF", "#333333", "#666666", "#999999"],
+            }
+        
+        # Ensure color_palette exists and is valid
+        if "color_palette" not in style:
+            style["color_palette"] = ["#FFFFFF", "#333333", "#666666"]
+        
+        # Build high_level_description
+        caption = prompt.get("caption", "")
+        if not caption:
+            # Build from elements
+            elements = prompt.get("composition", {}).get("elements", [])
+            subjects = [e.get("desc", e.get("description", "")) for e in elements[:3] if e.get("desc") or e.get("description")]
+            caption = ", ".join(subjects) if subjects else "a photograph"
+        
+        # Add LoRA trigger words to description
+        trigger_prefix = ""
         if lora_config:
             triggers = lora_config.get("trigger_words", [])
             if triggers:
-                parts.extend(triggers)
-
-        # Style description
-        style = prompt.get("style_description", {})
-        if style:
-            style_parts = [str(v) for v in style.values() if v]
-            if style_parts:
-                parts.extend(style_parts)
-
-        # Caption / main subject
-        caption = prompt.get("caption", "")
-        if caption:
-            parts.append(caption)
-
-        # Background
+                trigger_prefix = ", ".join(triggers) + ", "
+        
+        high_level = trigger_prefix + caption if trigger_prefix else caption
+        
+        # Build compositional_deconstruction
         bg = prompt.get("composition", {}).get("background", "")
-        if bg and bg != caption:
-            parts.append(bg)
-
-        # Elements
-        for elem in prompt.get("composition", {}).get("elements", []):
-            desc = elem.get("desc", elem.get("description", ""))
-            if desc and desc not in parts:
-                parts.append(desc)
-
-        result = ", ".join(parts) if parts else "a beautiful photograph, high quality"
-        return result
+        if not bg:
+            bg = caption  # fallback
+        
+        # Build elements with proper Ideogram 4 format
+        ideo_elements = []
+        raw_elements = prompt.get("composition", {}).get("elements", [])
+        
+        for i, elem in enumerate(raw_elements):
+            elem_type = elem.get("type", "obj")
+            desc = elem.get("desc", elem.get("description", elem.get("label", "")))
+            
+            if not desc:
+                continue
+            
+            entry = {"type": elem_type}
+            
+            # Add bbox (convert normalized 0-1 to Ideogram's 0-1000 coordinate system)
+            bbox = elem.get("bbox")
+            if bbox and len(bbox) == 4:
+                # Input is [x1, y1, x2, y2] normalized 0-1
+                # Ideogram expects [y_min, x_min, y_max, x_max] in 0-1000
+                x1, y1, x2, y2 = bbox
+                entry["bbox"] = [
+                    round(y1 * 1000),
+                    round(x1 * 1000),
+                    round(y2 * 1000),
+                    round(x2 * 1000),
+                ]
+            
+            if elem_type == "text":
+                entry["text"] = elem.get("text", desc)
+                entry["desc"] = f"Typography: {desc}"
+            else:
+                entry["desc"] = desc
+            
+            # Color palette per element
+            colors = elem.get("color_palette")
+            if colors:
+                entry["color_palette"] = colors
+            
+            ideo_elements.append(entry)
+        
+        # If no elements, create a basic one from the caption
+        if not ideo_elements:
+            ideo_elements.append({
+                "type": "obj",
+                "bbox": [200, 200, 800, 800],  # centered
+                "desc": caption,
+            })
+        
+        # Assemble the full Ideogram 4 JSON prompt
+        ideo_prompt = {
+            "high_level_description": high_level,
+            "style_description": style,
+            "compositional_deconstruction": {
+                "background": bg + " No text, no watermark, no logo, no clutter.",
+                "elements": ideo_elements,
+            }
+        }
+        
+        return _json.dumps(ideo_prompt)

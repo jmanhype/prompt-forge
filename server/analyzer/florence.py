@@ -132,7 +132,13 @@ class FlorenceAnalyzer:
         return result
     
     def to_ideogram_json(self, analysis: AnalysisResult) -> dict:
-        """Convert analysis to Ideogram 4 JSON prompt format."""
+        """Convert analysis to Ideogram 4 JSON prompt format.
+        
+        Ideogram 4 expects:
+        - Bbox coordinates in 0-1000 range (not pixels)
+        - Coordinate order: [y_min, x_min, y_max, x_max]
+        - Structured schema: high_level_description, style_description, compositional_deconstruction
+        """
         elements = []
         for elem in analysis.elements:
             entry = {
@@ -140,27 +146,32 @@ class FlorenceAnalyzer:
                 "desc": elem.description,
             }
             if elem.type == "obj":
-                # Convert normalized bbox to pixel coordinates (1024x1024 default)
+                # Convert normalized 0-1 bbox to Ideogram's 0-1000 coordinate system
+                # Input: [x1, y1, x2, y2] normalized
+                # Output: [y_min, x_min, y_max, x_max] in 0-1000
                 x1, y1, x2, y2 = elem.bbox
                 entry["bbox"] = [
-                    round(x1 * 1024),
-                    round(y1 * 1024),
-                    round(x2 * 1024),
-                    round(y2 * 1024),
+                    round(y1 * 1000),  # y_min
+                    round(x1 * 1000),  # x_min
+                    round(y2 * 1000),  # y_max
+                    round(x2 * 1000),  # x_max
                 ]
             elif elem.type == "text":
                 entry["text"] = elem.description
             elements.append(entry)
         
         prompt = {
-            "caption": analysis.caption,
-            "composition": {
-                "background": analysis.background,
+            "high_level_description": analysis.caption,
+            "style_description": analysis.style_description or {
+                "aesthetics": "professional photography, sharp detail, natural tones",
+                "lighting": "soft ambient lighting",
+                "medium": "photograph",
+                "color_palette": ["#FFFFFF", "#333333", "#666666", "#999999"],
+            },
+            "compositional_decomposition": {
+                "background": analysis.background + " No text, no watermark, no logo, no clutter.",
                 "elements": elements,
             },
         }
-        
-        if analysis.style_description:
-            prompt["style_description"] = analysis.style_description
         
         return prompt
