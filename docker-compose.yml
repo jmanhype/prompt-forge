@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  prompt-forge:
+    build: .
+    ports:
+      - "7861:7861"
+    environment:
+      - COMFYUI_URL=http://comfyui:8188
+      - FLORENCE_MODEL=microsoft/Florence-2-base-ft
+      - CONVERGENCE_THRESHOLD=0.55
+    volumes:
+      - ./data:/app/data
+      - ./workflows:/app/workflows
+    depends_on:
+      - comfyui
+    restart: unless-stopped
+
+  comfyui:
+    image: yanwk/comfyui-boot:latest
+    ports:
+      - "8188:8188"
+    volumes:
+      - comfyui_data:/root/ComfyUI
+    environment:
+      - CLI_ARGS=--listen 0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  comfyui_data:
