@@ -4,7 +4,7 @@
 
 Prompt Forge is an AI image generation tool that automatically refines prompts until the output matches your description. Instead of manually tweaking prompts, you describe what you want and let the system converge on the best result.
 
-![Demo](demo.gif)
+![Demo](content/demo.gif)
 
 ## Quick Start
 
