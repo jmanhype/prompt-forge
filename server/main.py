@@ -107,27 +107,49 @@ async def analyze_image(file: UploadFile = File(None), text: str = Form(None)):
     raise HTTPException(400, "Provide either 'file' or 'text'")
 
 
-# ─── Forge endpoint (SSE stream) ───
+# ─── Forge endpoint (JSON or Form) ───
+from pydantic import BaseModel
+
+class ForgeRequest(BaseModel):
+    description: str = ""
+    max_iterations: int = 5
+    threshold: float = 0.85
+
 @app.post("/api/forge")
 async def start_forge(
+    request: ForgeRequest = None,
     description: str = Form(""),
     file: UploadFile = File(None),
     max_iterations: int = Form(None),
     threshold: float = Form(None),
 ):
-    """Start a forge session. Returns session_id for WebSocket connection."""
+    """Start a forge session. Accepts JSON body or form data. Returns session_id for WebSocket."""
     session_id = str(uuid.uuid4())[:8]
+    
+    # Prefer JSON body, fall back to form data
+    desc = ""
+    max_iter = 5
+    thresh = 0.85
+    
+    if request:
+        desc = request.description or description
+        max_iter = request.max_iterations if request.max_iterations else (max_iterations or 5)
+        thresh = request.threshold if request.threshold else (threshold or 0.85)
+    else:
+        desc = description
+        max_iter = max_iterations or 5
+        thresh = threshold or 0.85
     
     image = None
     if file:
         contents = await file.read()
         image = Image.open(io.BytesIO(contents))
     
-    session = sessions.create(session_id, description)
+    session = sessions.create(session_id, desc)
     session.status = "running"
     
     # Run forge in background
-    asyncio.create_task(_run_forge(session_id, description, image, max_iterations, threshold))
+    asyncio.create_task(_run_forge(session_id, desc, image, max_iter, thresh))
     
     return {"session_id": session_id, "ws_url": f"/ws/forge/{session_id}"}
 
@@ -181,8 +203,7 @@ async def forge_websocket(websocket: WebSocket, session_id: str):
                 break
     except WebSocketDisconnect:
         pass
-    finally:
-        sessions.remove(session_id)
+    # Don't remove session on disconnect — keep for HTTP status queries
 
 
 # ─── Forge status ───
@@ -227,7 +248,9 @@ async def list_loras():
 
 @app.post("/api/rescan-loras")
 async def rescan_loras():
-    loras = engine.lora_detector.scan()
+    from .compiler.capability import probe_capabilities
+    caps = await probe_capabilities(config.COMFYUI_URL)
+    loras = engine.lora_detector.scan(api_loras=caps.available_loras)
     return {"count": len(loras), "loras": engine.lora_detector.list_loras()}
 
 

@@ -24,22 +24,66 @@ class LoRADetector:
         self.loras_dir = loras_dir
         self._loras: list[LoRA] = []
         self._trigger_map: dict[str, LoRA] = {}  # trigger_word → LoRA
+        self._api_loras: list[str] = []  # From ComfyUI /object_info
     
-    def scan(self) -> list[LoRA]:
-        """Scan loras directory and extract metadata."""
+    def scan(self, api_loras: Optional[list[str]] = None) -> list[LoRA]:
+        """Scan loras directory and extract metadata.
+        
+        Args:
+            api_loras: List of LoRA filenames from ComfyUI /object_info (preferred)
+        """
         self._loras = []
         self._trigger_map = {}
         
-        if not self.loras_dir.exists():
-            return self._loras
-        
-        for f in sorted(self.loras_dir.glob("*.safetensors")):
-            lora = self._parse_lora(f)
-            self._loras.append(lora)
-            for trigger in lora.trigger_words:
-                self._trigger_map[trigger.lower()] = lora
+        # Use API data if provided, otherwise fall back to local scan
+        if api_loras:
+            self._api_loras = api_loras
+            for lora_name in sorted(api_loras):
+                lora = self._parse_lora_from_api(lora_name)
+                self._loras.append(lora)
+                for trigger in lora.trigger_words:
+                    self._trigger_map[trigger.lower()] = lora
+        elif self.loras_dir.exists():
+            for f in sorted(self.loras_dir.glob("*.safetensors")):
+                lora = self._parse_lora(f)
+                self._loras.append(lora)
+                for trigger in lora.trigger_words:
+                    self._trigger_map[trigger.lower()] = lora
         
         return self._loras
+    
+    def _parse_lora_from_api(self, lora_name: str) -> LoRA:
+        """Extract trigger words from LoRA filename (from ComfyUI API)."""
+        stem = Path(lora_name).stem
+        
+        # Extract trigger from filename convention
+        # e.g., "ektachrome_style_v1" → trigger "ektachrome"
+        triggers = []
+        name_part = re.split(r'[_-](?:style|v\d|lora|sdxl|sd15)', stem.lower())[0]
+        name_part = name_part.replace("_", " ").replace("-", " ").strip()
+        if name_part:
+            triggers = [name_part]
+        
+        # Infer style tags from filename
+        tags = []
+        style_keywords = {
+            "vintage": ["vintage", "retro", "old", "classic"],
+            "film": ["film", "ektachrome", "kodachrome", "analog"],
+            "anime": ["anime", "manga", "cartoon"],
+            "realistic": ["realistic", "photo", "real"],
+            "artistic": ["art", "paint", "draw", "sketch"],
+            "cinematic": ["cinematic", "movie", "film"],
+        }
+        for tag, keywords in style_keywords.items():
+            if any(kw in stem.lower() for kw in keywords):
+                tags.append(tag)
+        
+        return LoRA(
+            filename=lora_name,
+            path="",
+            trigger_words=triggers,
+            style_tags=tags,
+        )
     
     def _parse_lora(self, path: Path) -> LoRA:
         """Extract trigger words from filename and safetensors metadata."""

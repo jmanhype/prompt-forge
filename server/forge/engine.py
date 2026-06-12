@@ -74,7 +74,8 @@ class ForgeEngine:
         
         caps = await probe_capabilities(config.COMFYUI_URL)
         self._compiler = WorkflowCompiler(caps, config.TEMPLATES_DIR)
-        self.lora_detector.scan()
+        # Pass API-detected LoRAs to detector
+        self.lora_detector.scan(api_loras=caps.available_loras)
         self.db.initialize()
     
     async def run(
