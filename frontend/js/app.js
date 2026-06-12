@@ -170,11 +170,13 @@ class App {
             
             // Connect WebSocket
             this.ws = API.connectForgeWS(session.session_id);
+            this.ws.onopen = () => this.setStatus('WebSocket connected — forge running...');
             this.ws.onmessage = (e) => this.handleWSEvent(JSON.parse(e.data));
             this.ws.onclose = () => this.forgeComplete();
             this.ws.onerror = () => {
-                this.setStatus('WebSocket error — forge may still be running');
-                this.forgeComplete();
+                // WebSocket failed — fall back to HTTP polling
+                this.setStatus('WebSocket unavailable — polling for updates...');
+                this.pollForgeStatus(session.session_id);
             };
         } catch (err) {
             this.setStatus(`Forge failed: ${err.message}`);
@@ -184,6 +186,7 @@ class App {
 
     handleWSEvent(msg) {
         const { type, data } = msg;
+        this._lastEventCount = (this._lastEventCount || 0) + 1;
         
         switch (type) {
             case 'connected':
@@ -254,8 +257,48 @@ class App {
         this.forgeComplete();
     }
 
+    async pollForgeStatus(sessionId) {
+        this._polling = true;
+        this._seenEvents = 0;
+        
+        while (this._polling && this.forgeRunning) {
+            try {
+                const resp = await fetch(`${API.baseUrl}/api/forge/${sessionId}`);
+                if (!resp.ok) {
+                    await new Promise(r => setTimeout(r, 5000));
+                    continue;
+                }
+                
+                const data = await resp.json();
+                const events = data.events || [];
+                
+                // Process new events
+                for (let i = this._seenEvents; i < events.length; i++) {
+                    this.handleWSEvent(events[i]);
+                }
+                this._seenEvents = events.length;
+                
+                // Stop polling if done
+                if (data.status === 'converged' || data.status === 'error') {
+                    this.forgeComplete();
+                    return;
+                }
+            } catch (err) {
+                console.error('Poll error:', err);
+            }
+            
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
+
     forgeComplete() {
+        if (!this.forgeRunning) return; // guard against double-call
         this.forgeRunning = false;
+        this._polling = false;
+        if (this.ws) {
+            try { this.ws.close(); } catch(e) {}
+            this.ws = null;
+        }
         const btn = document.getElementById('btn-forge');
         btn.classList.remove('running');
         btn.textContent = '⚒ FORGE';
