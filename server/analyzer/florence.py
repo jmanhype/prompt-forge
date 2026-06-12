@@ -1,0 +1,163 @@
+"""Florence-2 scene analyzer — captioning, bbox detection, OCR."""
+from __future__ import annotations
+
+import torch
+from PIL import Image
+from typing import Optional
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Element:
+    id: str
+    type: str  # "obj" | "text"
+    label: str
+    description: str
+    bbox: list[float]  # normalized [x1, y1, x2, y2] 0-1
+    confidence: float = 0.0
+
+
+@dataclass
+class AnalysisResult:
+    caption: str = ""
+    background: str = ""
+    palette: list[str] = field(default_factory=list)
+    elements: list[Element] = field(default_factory=list)
+    style_description: dict = field(default_factory=dict)
+    raw_json: dict = field(default_factory=dict)
+    model_used: str = ""
+
+
+class FlorenceAnalyzer:
+    """Wraps Florence-2 for scene analysis. Lazy-loads model on first use."""
+    
+    def __init__(self, model_id: str = "microsoft/Florence-2-base-ft"):
+        self.model_id = model_id
+        self._model = None
+        self._processor = None
+        self._device = None
+    
+    def _load_model(self):
+        if self._model is not None:
+            return
+        
+        from transformers import AutoProcessor, AutoModelForCausalLM
+        
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if self._device == "cuda" else torch.float32
+        
+        self._processor = AutoProcessor.from_pretrained(
+            self.model_id, trust_remote_code=True
+        )
+        self._model = AutoModelForCausalLM.from_pretrained(
+            self.model_id, trust_remote_code=True, torch_dtype=dtype
+        ).to(self._device)
+        self._model.eval()
+    
+    @torch.no_grad()
+    def _run_task(self, image: Image.Image, task: str, text: str = "") -> str:
+        self._load_model()
+        inputs = self._processor(text=text, images=image, return_tensors="pt")
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+        
+        ids = self._model.generate(
+            input_ids=inputs["input_ids"],
+            pixel_values=inputs["pixel_values"],
+            max_new_tokens=1024,
+            num_beams=3,
+            do_sample=False,
+        )
+        return self._processor.batch_decode(ids, skip_special_tokens=False)[0]
+    
+    def _parse_response(self, response: str, task: str, image_size: tuple) -> dict:
+        self._load_model()
+        parsed = self._processor.post_process_generation(
+            response, task=task, image_size=image_size
+        )
+        return parsed.get(task, {})
+    
+    def analyze(self, image: Image.Image) -> AnalysisResult:
+        """Run full analysis pipeline on an image."""
+        w, h = image.size
+        result = AnalysisResult(model_used=self.model_id)
+        
+        # 1. Detailed caption
+        caption_resp = self._run_task(image, "<DETAILED_CAPTION>")
+        caption_data = self._parse_response(caption_resp, "<DETAILED_CAPTION>", (w, h))
+        result.caption = caption_data if isinstance(caption_data, str) else str(caption_data)
+        
+        # 2. Object detection (bboxes)
+        od_resp = self._run_task(image, "<OD>")
+        od_data = self._parse_response(od_resp, "<OD>", (w, h))
+        
+        bboxes = od_data.get("bboxes", [])
+        labels = od_data.get("bboxes_labels", [])
+        
+        for i, (bbox, label) in enumerate(zip(bboxes, labels)):
+            # Normalize to 0-1
+            x1, y1, x2, y2 = bbox
+            norm_bbox = [x1/w, y1/h, x2/w, y2/h]
+            result.elements.append(Element(
+                id=f"e{i+1}",
+                type="obj",
+                label=label.lower(),
+                description=label.lower(),
+                bbox=norm_bbox,
+                confidence=0.9,  # Florence doesn't return confidence
+            ))
+        
+        # 3. OCR (text regions)
+        ocr_resp = self._run_task(image, "<OCR>")
+        ocr_data = self._parse_response(ocr_resp, "<OCR>", (w, h))
+        if isinstance(ocr_data, dict):
+            texts = ocr_data.get("text", [])
+            for i, text in enumerate(texts):
+                if text.strip():
+                    result.elements.append(Element(
+                        id=f"t{i+1}",
+                        type="text",
+                        label="text",
+                        description=text.strip(),
+                        bbox=[0.0, 0.0, 0.1, 0.1],  # OCR doesn't give bboxes in base
+                        confidence=0.7,
+                    ))
+        
+        # 4. Background from caption
+        if result.caption:
+            result.background = result.caption
+        
+        return result
+    
+    def to_ideogram_json(self, analysis: AnalysisResult) -> dict:
+        """Convert analysis to Ideogram 4 JSON prompt format."""
+        elements = []
+        for elem in analysis.elements:
+            entry = {
+                "type": elem.type,
+                "desc": elem.description,
+            }
+            if elem.type == "obj":
+                # Convert normalized bbox to pixel coordinates (1024x1024 default)
+                x1, y1, x2, y2 = elem.bbox
+                entry["bbox"] = [
+                    round(x1 * 1024),
+                    round(y1 * 1024),
+                    round(x2 * 1024),
+                    round(y2 * 1024),
+                ]
+            elif elem.type == "text":
+                entry["text"] = elem.description
+            elements.append(entry)
+        
+        prompt = {
+            "caption": analysis.caption,
+            "composition": {
+                "background": analysis.background,
+                "elements": elements,
+            },
+        }
+        
+        if analysis.style_description:
+            prompt["style_description"] = analysis.style_description
+        
+        return prompt

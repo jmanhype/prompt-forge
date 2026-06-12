@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prompt Forge</title>
+    <link rel="stylesheet" href="/static/css/forge.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <span class="logo-icon">⚒</span>
+            <span class="logo-text">PROMPT FORGE</span>
+            <span class="version">v0.1</span>
+        </div>
+        <nav>
+            <button id="btn-new" class="nav-btn active">New Forge</button>
+            <button id="btn-library" class="nav-btn">Library</button>
+            <button id="btn-settings" class="nav-btn">Settings</button>
+        </nav>
+        <div class="header-status">
+            <span id="comfyui-status" class="status-dot offline"></span>
+            <span id="comfyui-label">ComfyUI: checking...</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- INPUT PANEL -->
+        <aside id="input-panel" class="panel">
+            <h2>Input</h2>
+            <div id="drop-zone" class="drop-zone">
+                <p>Drop an image or</p>
+                <label class="file-btn">
+                    Choose image
+                    <input type="file" id="file-input" accept="image/*" hidden>
+                </label>
+                <p class="or">or</p>
+                <textarea id="text-input" placeholder="Describe what you want to generate..."></textarea>
+            </div>
+            
+            <div id="elements-panel" class="hidden">
+                <h3>Elements</h3>
+                <div id="elements-list"></div>
+            </div>
+            
+            <div id="style-panel" class="hidden">
+                <h3>Style</h3>
+                <div id="style-fields"></div>
+            </div>
+            
+            <div id="lora-panel" class="hidden">
+                <h3>Auto-detected LoRA</h3>
+                <div id="lora-info"></div>
+            </div>
+            
+            <button id="btn-forge" class="forge-btn" disabled>
+                ⚒ FORGE
+            </button>
+        </aside>
+
+        <!-- CANVAS -->
+        <section id="canvas-panel" class="panel main-panel">
+            <div id="canvas-container">
+                <canvas id="forge-canvas"></canvas>
+                <div id="canvas-overlay" class="hidden">
+                    <div id="iteration-label">Iteration 0/0</div>
+                </div>
+            </div>
+            
+            <!-- ITERATION TIMELINE -->
+            <div id="timeline">
+                <div id="timeline-items"></div>
+            </div>
+        </section>
+
+        <!-- SCORES PANEL -->
+        <aside id="scores-panel" class="panel">
+            <h2>Scores</h2>
+            
+            <div id="overall-score" class="score-block">
+                <div class="score-label">Overall</div>
+                <div class="score-bar-container">
+                    <div id="overall-bar" class="score-bar" style="width: 0%"></div>
+                </div>
+                <div id="overall-value" class="score-value">0%</div>
+            </div>
+            
+            <div id="detail-scores">
+                <div class="score-block">
+                    <div class="score-label">Composition</div>
+                    <div class="score-bar-container">
+                        <div id="comp-bar" class="score-bar comp" style="width: 0%"></div>
+                    </div>
+                    <div id="comp-value" class="score-value">0%</div>
+                </div>
+                <div class="score-block">
+                    <div class="score-label">Style</div>
+                    <div class="score-bar-container">
+                        <div id="style-bar" class="score-bar style" style="width: 0%"></div>
+                    </div>
+                    <div id="style-value" class="score-value">0%</div>
+                </div>
+                <div class="score-block">
+                    <div class="score-label">Subject</div>
+                    <div class="score-bar-container">
+                        <div id="subject-bar" class="score-bar subject" style="width: 0%"></div>
+                    </div>
+                    <div id="subject-value" class="score-value">0%</div>
+                </div>
+            </div>
+            
+            <div id="region-details">
+                <h3>Regions</h3>
+                <div id="region-list"></div>
+            </div>
+            
+            <div id="diagnosis-panel">
+                <h3>Diagnosis</h3>
+                <div id="diagnosis-list"></div>
+            </div>
+            
+            <div id="mutations-panel" class="hidden">
+                <h3>Mutations Applied</h3>
+                <div id="mutations-list"></div>
+            </div>
+        </aside>
+    </main>
+
+    <!-- STATUS BAR -->
+    <footer id="status-bar">
+        <span id="status-text">Ready — drop an image or type a description</span>
+        <span id="status-right">
+            <span id="strategy-label">Strategy: —</span>
+            <span id="forge-timer"></span>
+        </span>
+    </footer>
+
+    <!-- LIBRARY MODAL (hidden) -->
+    <div id="library-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Composition Library</h2>
+                <button id="close-library" class="close-btn">×</button>
+            </div>
+            <div class="modal-search">
+                <input type="text" id="library-search" placeholder="Search compositions...">
+            </div>
+            <div id="library-grid"></div>
+        </div>
+    </div>
+
+    <script type="module" src="/static/js/api.js"></script>
+    <script type="module" src="/static/js/canvas.js"></script>
+    <script type="module" src="/static/js/iterations.js"></script>
+    <script type="module" src="/static/js/library.js"></script>
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
