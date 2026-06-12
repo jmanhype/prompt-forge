@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Optional
 from .capability import ComfyUICapabilities
@@ -19,59 +20,55 @@ class WorkflowCompiler:
         """Compile prompt to workflow based on available capabilities."""
         strategy = self.capabilities.best_strategy
         
-        if strategy == "mega_prompt":
-            return self._compile_mega_prompt(prompt, lora_config)
+        # Flux is preferred when available (best quality)
+        if self.capabilities.has_flux:
+            return self._compile_flux(prompt, lora_config)
         elif strategy == "gligen":
             return self._compile_gligen(prompt, lora_config)
-        elif strategy == "attention_couple":
-            return self._compile_attention_couple(prompt, lora_config)
-        else:
-            # Fallback
+        elif strategy == "mega_prompt":
             return self._compile_mega_prompt(prompt, lora_config)
+        else:
+            return self._compile_flux(prompt, lora_config)
+    
+    def _compile_flux(self, prompt: dict, lora_config: Optional[dict]) -> dict:
+        """Build a Flux Dev workflow with optional LoRA injection."""
+        if lora_config and lora_config.get("lora_name"):
+            workflow = load_template("flux_lora", self.templates_dir)
+            # Update LoRA node
+            if "100" in workflow:
+                workflow["100"]["inputs"]["lora_name"] = lora_config["lora_name"]
+                workflow["100"]["inputs"]["strength_model"] = lora_config.get("strength", 0.8)
+                workflow["100"]["inputs"]["strength_clip"] = lora_config.get("clip_strength", 0.6)
+        else:
+            workflow = load_template("flux_dev", self.templates_dir)
+        
+        # Build prompt text from structured data
+        prompt_text = self._build_prompt_text(prompt, lora_config)
+        
+        # Inject into CLIPTextEncodeFlux
+        if "4" in workflow:
+            workflow["4"]["inputs"]["clip_l"] = prompt_text
+            workflow["4"]["inputs"]["t5xxl"] = prompt_text
+        
+        # Randomize seed
+        if "6" in workflow:
+            workflow["6"]["inputs"]["seed"] = random.randint(0, 2**32 - 1)
+        
+        return workflow
     
     def _compile_mega_prompt(self, prompt: dict, lora_config: Optional[dict]) -> dict:
-        """Build a structured mega-prompt workflow (works with any checkpoint)."""
-        # Build the prompt string from structured data
-        parts = []
-        
-        # Style prefix
-        style = prompt.get("style_description", {})
-        if style:
-            style_parts = [v for v in style.values() if v]
-            parts.append(f"({', '.join(style_parts)}:1.2)")
-        
-        # Background
-        bg = prompt.get("composition", {}).get("background", "")
-        if bg:
-            parts.append(bg)
-        
-        # Elements with weights
-        for elem in prompt.get("composition", {}).get("elements", []):
-            desc = elem.get("desc", elem.get("description", ""))
-            if desc:
-                parts.append(f"({desc}:1.3)")
-        
-        full_prompt = ", ".join(parts)
-        
-        # Add LoRA triggers
-        if lora_config:
-            lora_prompt_parts = [f"{t}" for t in lora_config.get("trigger_words", [])]
-            if lora_prompt_parts:
-                full_prompt = ", ".join(lora_prompt_parts) + ", " + full_prompt
-        
-        # Build minimal ComfyUI API workflow
+        """Build a structured mega-prompt workflow (SDXL fallback)."""
+        prompt_text = self._build_prompt_text(prompt, lora_config)
         workflow = load_template("mega_prompt", self.templates_dir)
         
-        # Inject prompt text
-        if "6" in workflow:  # Standard CLIP text encode node
-            workflow["6"]["inputs"]["text"] = full_prompt
+        if "6" in workflow:
+            workflow["6"]["inputs"]["text"] = prompt_text
         
-        # Add LoRA loader nodes if configured
         if lora_config and lora_config.get("lora_name"):
             lora_node = {
                 "class_type": "LoraLoader",
                 "inputs": {
-                    "model": ["4", 0],  # connected to checkpoint
+                    "model": ["4", 0],
                     "clip": ["4", 1],
                     "lora_name": lora_config["lora_name"],
                     "strength_model": lora_config.get("strength", 0.8),
@@ -79,17 +76,53 @@ class WorkflowCompiler:
                 }
             }
             workflow["100"] = lora_node
+            # Rewire KSampler to use LoRA outputs
+            if "3" in workflow:
+                workflow["3"]["inputs"]["model"] = ["100", 0]
+                workflow["3"]["inputs"]["positive"] = ["100", 1]
         
         return workflow
     
     def _compile_gligen(self, prompt: dict, lora_config: Optional[dict]) -> dict:
-        """Build GLIGEN workflow with bbox conditioning."""
+        """Build GLIGEN workflow with bbox conditioning (SD1.5)."""
         workflow = load_template("gligen_sdxl", self.templates_dir)
-        # TODO: inject bbox coordinates into GLIGEN nodes
         return workflow
     
-    def _compile_attention_couple(self, prompt: dict, lora_config: Optional[dict]) -> dict:
-        """Build Attention Couple workflow for regional control."""
-        workflow = load_template("attention_couple", self.templates_dir)
-        # TODO: inject regional prompts and masks
-        return workflow
+    def _build_prompt_text(self, prompt: dict, lora_config: Optional[dict]) -> str:
+        """Build a natural language prompt from structured JSON data."""
+        parts = []
+        
+        # LoRA trigger words first
+        if lora_config:
+            triggers = lora_config.get("trigger_words", [])
+            if triggers:
+                parts.extend(triggers)
+        
+        # Style description
+        style = prompt.get("style_description", {})
+        if style:
+            style_parts = [str(v) for v in style.values() if v]
+            if style_parts:
+                parts.extend(style_parts)
+        
+        # Caption / main subject
+        caption = prompt.get("caption", "")
+        if caption:
+            parts.append(caption)
+        
+        # Background
+        bg = prompt.get("composition", {}).get("background", "")
+        if bg and bg != caption:
+            parts.append(bg)
+        
+        # Elements
+        for elem in prompt.get("composition", {}).get("elements", []):
+            desc = elem.get("desc", elem.get("description", ""))
+            if desc and desc not in parts:
+                parts.append(desc)
+        
+        # Negative prompt handling (stored separately)
+        # Flux doesn't use negative prompts the same way, but we include them in the text
+        
+        result = ", ".join(parts) if parts else "a beautiful photograph, high quality"
+        return result
