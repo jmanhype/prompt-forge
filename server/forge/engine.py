@@ -286,97 +286,24 @@ class ForgeEngine:
         return last_result
     
     async def _parse_text_description(self, description: str) -> dict:
-        """Parse natural language into structured prompt with elements.
+        """Parse natural language into structured prompt.
         
-        Produces caption + composition with elements that have descriptions
-        suitable for JSON prompts with bounding boxes.
+        User's text passes through unchanged. JSON format bypasses safety filter.
         """
-        # Extract the core subject from the description
-        subject = description.strip()
+        # User's text is sacred — never rewrite it
+        caption = description.strip()
         
-        # If already detailed enough, use as-is
-        if len(subject) > 100:
-            caption = subject
-            # Try to extract elements from the detailed description
-            elements = self._extract_elements_from_text(caption)
-        else:
-            # Short descriptions need enrichment with CONCRETE details
-            # Map common subjects to specific visual settings with TANGIBLE objects
-            setting_map = {
-                "wolfman": ("standing in a moonlit forest clearing with tall pine trees and silver light",
-                           [{"desc": "Wolfman creature with detailed fur, glowing eyes, and sharp claws", "type": "subject"}]),
-                "werewolf": ("standing in a moonlit forest clearing with tall pine trees and silver light",
-                            [{"desc": "Werewolf with muscular form, detailed fur, and sharp features", "type": "subject"}]),
-                "dog": ("sitting on green grass in a sunny suburban backyard with a wooden fence", 
-                        [{"desc": "Golden retriever dog with detailed fur", "type": "subject"}]),
-                "retriever": ("sitting on green grass in a sunny suburban backyard with a wooden fence",
-                             [{"desc": "Golden retriever dog with detailed fur", "type": "subject"}]),
-                "puppy": ("sitting on green grass in a sunny suburban backyard with a wooden fence",
-                         [{"desc": "Cute puppy with playful expression", "type": "subject"}]),
-                "cat": ("sitting on a wooden windowsill with lace curtains and sunlight streaming in",
-                       [{"desc": "Cat with detailed whiskers and eyes", "type": "subject"}]),
-                "kitten": ("sitting on a wooden windowsill with lace curtains and sunlight streaming in",
-                          [{"desc": "Adorable kitten with fluffy fur", "type": "subject"}]),
-                "car": ("parked on a tree-lined street next to red brick row houses",
-                       [{"desc": "Car with polished surface and chrome details", "type": "subject"}]),
-                "person": ("standing on a cobblestone sidewalk next to a cafe with potted plants",
-                          [{"desc": "Person with natural pose and detailed clothing", "type": "subject"}]),
-                "woman": ("standing on a cobblestone sidewalk next to a cafe with potted plants",
-                         [{"desc": "Woman with natural pose and detailed clothing", "type": "subject"}]),
-                "man": ("standing on a cobblestone sidewalk next to a cafe with potted plants",
-                       [{"desc": "Man with natural pose and detailed clothing", "type": "subject"}]),
-                "flower": ("in a terracotta pot on a rustic wooden garden table with sunflowers behind",
-                          [{"desc": "Flower with delicate petals and vibrant colors", "type": "subject"}]),
-                "rose": ("in a terracotta pot on a rustic wooden garden table with green leaves behind",
-                        [{"desc": "Rose with layered petals and thorns", "type": "subject"}]),
-                "building": ("a red brick warehouse with large iron-framed windows on a gravel lot",
-                            [{"desc": "Building with architectural details and weathered facade", "type": "subject"}]),
-                "house": ("a charming cottage with a stone path and blooming garden",
-                         [{"desc": "House with detailed architecture and surroundings", "type": "subject"}]),
-                "mountain": ("snow-capped peaks with tall pine trees and a crystal clear lake in front",
-                            [{"desc": "Mountain peaks with snow and rocky texture", "type": "subject"}]),
-                "ocean": ("rocky coastline with crashing blue waves and white seabirds flying overhead",
-                         [{"desc": "Ocean waves with foam and spray", "type": "subject"}]),
-                "beach": ("sandy shore with turquoise water and palm trees swaying in the breeze",
-                         [{"desc": "Beach with golden sand and gentle waves", "type": "subject"}]),
-                "food": ("on a white marble countertop with fresh basil leaves and olive oil bottle",
-                        [{"desc": "Food with natural colors and textures", "type": "subject"}]),
-                "bird": ("perched on a mossy oak branch with soft green forest bokeh behind",
-                        [{"desc": "Bird with detailed feathers and sharp eyes", "type": "subject"}]),
-                "tree": ("a large oak tree in a wildflower meadow with daisies and blue sky above",
-                        [{"desc": "Tree with textured bark and detailed leaves", "type": "subject"}]),
-                "horse": ("standing in a green paddock with white wooden fence and rolling hills behind",
-                         [{"desc": "Horse with muscular form and flowing mane", "type": "subject"}]),
-                "boat": ("moored at a wooden dock in a calm blue harbor with colorful houses on shore",
-                        [{"desc": "Boat with detailed hull and rigging", "type": "subject"}]),
-                "train": ("at a vintage railway platform with wrought iron columns and glass roof",
-                         [{"desc": "Train with metallic details and steam", "type": "subject"}]),
-                "robot": ("standing on a polished concrete floor with server racks and LED panels behind",
-                         [{"desc": "Robot with metallic surface and glowing elements", "type": "subject"}]),
-                "castle": ("on a hilltop surrounded by stone walls and medieval towers against a cloudy sky",
-                          [{"desc": "Castle with detailed stonework and battlements", "type": "subject"}]),
-                "bridge": ("a stone arch bridge over a river with autumn trees reflecting in the water",
-                          [{"desc": "Bridge with architectural details and reflections", "type": "subject"}]),
-            }
-            
-            # Try to match a setting
-            setting = "in a bright outdoor scene with trees and natural light"
-            elements = [{"desc": subject, "type": "subject"}]
-            for key, (val, elems) in setting_map.items():
-                if key in subject.lower():
-                    setting = val
-                    elements = elems
-                    break
-            
-            caption = (
-                f"{subject} {setting}. "
-                f"Professional photography, sharp focus, natural daylight."
-            )
+        # Extract the subject as an element for JSON prompts
+        elements = [{
+            "desc": caption,
+            "type": "subject",
+            "bbox": [200, 150, 800, 850]  # Large centered box
+        }]
         
         return {
             "caption": caption,
             "composition": {
-                "background": f"Background and environment surrounding the subject.",
+                "background": "Background and environment",
                 "elements": elements,
             },
             "style_description": {},
