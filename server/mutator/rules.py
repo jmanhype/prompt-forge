@@ -1,12 +1,11 @@
-"""Rule-based prompt mutations — enriched for Ideogram 4 based on calibration data.
-
-Key finding: longer, more detailed prompts scored significantly higher in CLIP.
-Mutations ADD detail rather than swapping words randomly.
-"""
+"""Rule-based prompt mutations — using Strategy pattern for contextual enrichment."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Optional, List
+
+from ..patterns.factory import EnrichmentFactory
+from ..patterns.strategy import EnrichmentStrategy, NoEnrichment
 
 
 @dataclass
@@ -21,167 +20,112 @@ class Mutation:
         return self.description
 
 
-# ── Enrichment libraries ──
-
-# Film/medium detail phrases that Ideogram 4 responds to
-FILM_DETAILS = [
-    "visible luminance film grain throughout the frame",
-    "cyan color shift in the shadow areas",
-    "slight optical gate weave at the frame edges",
-    "faded archival quality with subtle color desaturation",
-    "natural lens vignetting at corners",
-    "soft halation around highlights",
-    "fine chromatic aberration at high contrast edges",
-]
-
-# Camera/lighting detail phrases
-CAMERA_DETAILS = [
-    "shot from a static tripod at human eye level",
-    "deep depth of field with everything in sharp focus",
-    "flat even lighting with no dramatic shadows",
-    "natural ambient lighting from the environment",
-    "slightly underexposed for rich shadow detail",
-    "medium format camera perspective with natural compression",
-]
-
-# Setting/environment detail phrases
-SETTING_DETAILS = [
-    "empty and undisturbed environment",
-    "signs of age and weathering on surfaces",
-    "atmospheric haze in the background",
-    "muted earth tones in the surroundings",
-    "documented as if for scientific observation",
-    "archival government documentation aesthetic",
-]
-
-# Subject enrichments — adjectives that make subjects more specific
-SUBJECT_ENRICHMENTS = {
-    "dog": ["sitting upright", "alert posture", "fur catching the light"],
-    "cat": ["perched", "watchful eyes", "tail curled"],
-    "car": ["polished surface reflecting light", "chrome details gleaming", "parked stationary"],
-    "person": ["standing naturally", "relaxed posture", "facing the camera"],
-    "building": ["weathered facade", "architectural details visible", "casting long shadows"],
-    "flower": ["in full bloom", "delicate petals", "backlit by soft light"],
-    "food": ["freshly prepared", "natural colors", "artfully arranged"],
-    "default": ["clearly visible", "in sharp focus", "centered in frame"],
-}
-
-
 class RuleMutator:
-    """Generates rule-based mutations calibrated for Ideogram 4."""
+    """Generates rule-based mutations using contextual enrichment strategies."""
 
-    def __init__(self):
-        self._film_idx = 0
-        self._camera_idx = 0
-        self._setting_idx = 0
+    def __init__(self, convergence_threshold: float = 0.85):
+        self.convergence_threshold = convergence_threshold
+        # Derive thresholds from convergence threshold
+        self.mutation_threshold = convergence_threshold * 0.7
+        self.low_score_threshold = convergence_threshold * 0.6
 
-    def get_mutations(self, score, prompt: dict) -> list[Mutation]:
+    def get_mutations(self, score, prompt: dict, lora_config: Optional[dict] = None) -> list[Mutation]:
         """Determine what mutations to apply based on scoring results.
         
-        Strategy: enrich the caption with more detail.
-        Calibration showed longer prompts score 0.06+ higher in CLIP.
+        Uses Strategy pattern to select context-appropriate enrichment.
+        Only enriches if relevant to the prompt's aesthetic.
         """
         mutations = []
         caption = prompt.get("caption", "")
 
-        # 1. If overall score is low, enrich the caption
-        if score.overall < 0.4:
-            mutations.extend(self._enrich_caption(caption, prompt))
+        # Select enrichment strategy based on prompt content and LoRA
+        strategy = EnrichmentFactory.create(prompt, lora_config)
+        
+        # If strategy should apply, use it for enrichment
+        if strategy.should_apply(prompt, lora_config) and not isinstance(strategy, NoEnrichment):
+            # 1. If overall score is low, enrich caption with strategy
+            if score.overall < self.mutation_threshold:
+                mutations.extend(self._enrich_caption_with_strategy(caption, prompt, strategy))
 
-        # 2. If style score is low, add film/camera details
-        if score.style < 0.4:
-            mutations.append(self._add_film_detail(prompt))
-            mutations.append(self._add_camera_detail(prompt))
+            # 2. If style score is low, add style details from strategy
+            if score.style < self.mutation_threshold:
+                mutations.append(self._add_style_detail(prompt, strategy))
 
-        # 3. If subject score is low, enrich element descriptions
-        if score.subject < 0.4:
-            mutations.append(self._enrich_subjects(prompt))
+            # 3. If subject score is low, enrich element descriptions
+            if score.subject < self.mutation_threshold:
+                mutations.append(self._enrich_subjects_with_strategy(prompt, strategy))
+        else:
+            # No enrichment strategy applies - just return minimal mutations
+            if score.overall < self.mutation_threshold:
+                mutations.append(self._add_generic_detail(prompt))
 
         # 4. If we have regions, enrich the worst one
-        failing_regions = [r for r in score.regions if r.composite < 0.3]
+        failing_regions = [r for r in score.regions if r.composite < self.low_score_threshold]
         if failing_regions:
             worst = min(failing_regions, key=lambda r: r.composite)
             mutations.append(self._enrich_element(worst, prompt))
 
-        # 5. Always add a setting detail (calibration showed these help)
-        if len(caption.split()) < 40:
-            mutations.append(self._add_setting_detail(prompt))
-
         if not mutations:
-            mutations.append(self._add_film_detail(prompt))
+            mutations.append(self._add_generic_detail(prompt))
 
         return mutations
 
-    def _enrich_caption(self, caption: str, prompt: dict) -> list[Mutation]:
-        """Add descriptive detail to the main caption."""
-        mutations = []
+    def _enrich_caption_with_strategy(self, caption: str, prompt: dict, strategy: EnrichmentStrategy) -> list[Mutation]:
+        """Enrich caption using the selected strategy."""
+        enriched_caption = strategy.enrich_caption(caption)
+        if enriched_caption != caption:
+            return [Mutation(
+                description=f"enriched caption with {strategy.get_name()} style",
+                apply_fn=lambda p: _update_caption(p, lambda c: enriched_caption),
+            )]
+        return []
 
-        # Add medium description if missing
-        if "film" not in caption.lower() and "photograph" not in caption.lower():
-            mutations.append(Mutation(
-                description="added medium description (archival photograph)",
-                apply_fn=lambda p: _update_caption(p, lambda c: c + ", archival documentary photograph"),
-            ))
+    def _add_style_detail(self, prompt: dict, strategy: EnrichmentStrategy) -> Mutation:
+        """Add style details from strategy."""
+        phrases = strategy.get_environment_phrases()
+        if phrases:
+            phrase = phrases[0]  # Use first phrase
+            return Mutation(
+                description=f"added {strategy.get_name()} style: '{phrase[:40]}...'",
+                apply_fn=lambda p: _update_caption(p, lambda c: f"{c}, {phrase}"),
+            )
+        else:
+            return self._add_generic_detail(prompt)
 
-        # Add lighting if missing
-        if "lighting" not in caption.lower() and "light" not in caption.lower():
-            mutations.append(Mutation(
-                description="added lighting description (flat even lighting)",
-                apply_fn=lambda p: _update_caption(p, lambda c: c + ", flat even lighting with no dramatic shadows"),
-            ))
-
-        return mutations
-
-    def _add_film_detail(self, prompt: dict) -> Mutation:
-        detail = FILM_DETAILS[self._film_idx % len(FILM_DETAILS)]
-        self._film_idx += 1
-        return Mutation(
-            description=f"added film detail: '{detail[:40]}...'",
-            apply_fn=lambda p: _update_caption(p, lambda c: c + f", {detail}"),
-        )
-
-    def _add_camera_detail(self, prompt: dict) -> Mutation:
-        detail = CAMERA_DETAILS[self._camera_idx % len(CAMERA_DETAILS)]
-        self._camera_idx += 1
-        return Mutation(
-            description=f"added camera detail: '{detail[:40]}...'",
-            apply_fn=lambda p: _update_caption(p, lambda c: c + f", {detail}"),
-        )
-
-    def _add_setting_detail(self, prompt: dict) -> Mutation:
-        detail = SETTING_DETAILS[self._setting_idx % len(SETTING_DETAILS)]
-        self._setting_idx += 1
-        return Mutation(
-            description=f"added setting detail: '{detail[:40]}...'",
-            apply_fn=lambda p: _update_caption(p, lambda c: c + f", {detail}"),
-        )
-
-    def _enrich_subjects(self, prompt: dict) -> Mutation:
-        """Enrich element descriptions with specific adjectives."""
+    def _enrich_subjects_with_strategy(self, prompt: dict, strategy: EnrichmentStrategy) -> Mutation:
+        """Enrich element descriptions using strategy."""
         def apply(p):
             elements = p.get("composition", {}).get("elements", [])
-            enriched = 0
-            for elem in elements:
-                desc = elem.get("desc", "")
-                if not desc or "clearly visible" in desc:
-                    continue
-                # Find matching enrichment
-                key = "default"
-                for k in SUBJECT_ENRICHMENTS:
-                    if k != "default" and k in desc.lower():
-                        key = k
-                        break
-                enrichments = SUBJECT_ENRICHMENTS[key]
-                extra = ", ".join(enrichments)
-                if extra not in desc:
-                    elem["desc"] = f"{desc}, {extra}"
-                    enriched += 1
-                    if enriched >= 3:
-                        break
+            enriched_elements = strategy.enrich_elements(elements)
+            if "composition" in p:
+                p["composition"]["elements"] = enriched_elements
             return p
+        
         return Mutation(
-            description="enriched subject descriptions with specific adjectives",
+            description=f"enriched elements with {strategy.get_name()} details",
             apply_fn=apply,
+        )
+
+    def _add_generic_detail(self, prompt: dict) -> Mutation:
+        """Add a generic detail when no strategy applies."""
+        generic_details = [
+            "highly detailed",
+            "sharp focus",
+            "professional quality",
+            "carefully composed",
+        ]
+        # Pick one that's not already in the caption
+        caption = prompt.get("caption", "")
+        for detail in generic_details:
+            if detail not in caption.lower():
+                return Mutation(
+                    description=f"added generic detail: '{detail}'",
+                    apply_fn=lambda p: _update_caption(p, lambda c: f"{c}, {detail}"),
+                )
+        # All generic details already present
+        return Mutation(
+            description="no generic details to add",
+            apply_fn=lambda p: p,
         )
 
     def _enrich_element(self, region, prompt: dict) -> Mutation:

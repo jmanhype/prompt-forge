@@ -1,0 +1,9 @@
+{
+  "has_gligen": ["GLIGENLoader", "GLIGENTextBoxApply"],
+  "has_attention_couple": ["AttentionCouple", "AttentionCoupleBase"],
+  "has_ipadapter_region": ["IPAdapterRegionalConditioning", "IPAdapterRegional"],
+  "has_flux_guidance": ["FluxGuidance", "FluxDisableGuidance"],
+  "has_regional_condition": ["RegionalConditioning", "RegionalPrompter", "RegionalSampler"],
+  "has_flux": ["CLIPTextEncodeFlux", "ModelSamplingFlux"],
+  "has_ideogram4": ["IdeogramV4", "Ideogram4Scheduler", "CLIPLoader"]
+}

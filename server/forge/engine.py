@@ -22,6 +22,10 @@ from ..mutator.llm import llm_mutate
 from ..store.database import Database
 from ..lora.detector import LoRADetector
 from ..config import config
+from ..patterns.registry import CalibrationRegistry
+from ..patterns.observer import (
+    ObserverManager, DiagnosisObserver, HeatmapObserver, MutationTriggerObserver
+)
 
 
 @dataclass
@@ -62,8 +66,13 @@ class ForgeEngine:
             qwen_vl_url=config.QWEN_VL_URL,
         )
         self.connector = ComfyUIConnector(url=config.COMFYUI_URL)
-        self.scorer = Scorer(threshold=config.CONVERGENCE_THRESHOLD)
-        self.mutator = Mutator()
+        self.scorer = Scorer(
+            threshold=config.CONVERGENCE_THRESHOLD,
+            model_name=config.CLIP_MODEL,
+            pretrained=config.CLIP_PRETRAINED,
+            calibration_registry=CalibrationRegistry(config.CALIBRATION_CONFIG)
+        )
+        self.mutator = Mutator(convergence_threshold=config.CONVERGENCE_THRESHOLD)
         self.db = Database(config.DB_PATH)
         self.lora_detector = LoRADetector(config.loras_dir)
         self._compiler: Optional[WorkflowCompiler] = None
@@ -93,6 +102,16 @@ class ForgeEngine:
         max_iter = max_iterations or config.MAX_ITERATIONS
         thresh = threshold or config.CONVERGENCE_THRESHOLD
         self.scorer.threshold = thresh
+        
+        # Set up observers for score feedback
+        observer_manager = ObserverManager()
+        diagnosis_observer = DiagnosisObserver(convergence_threshold=thresh)
+        heatmap_observer = HeatmapObserver()
+        mutation_observer = MutationTriggerObserver(convergence_threshold=thresh)
+        
+        observer_manager.register(diagnosis_observer)
+        observer_manager.register(heatmap_observer)
+        observer_manager.register(mutation_observer)
         
         iterations = []
         start_time = time.time()
@@ -174,8 +193,13 @@ class ForgeEngine:
                     score = ForgeScore(overall=0.0, converged=False)
                 
                 iteration.score = score
-                iteration.diagnosis = score.diagnosis()
-                iteration.heatmap = generate_heatmap_data(score)
+                
+                # Notify observers of score update
+                observer_manager.notify_all(score, i + 1)
+                
+                # Get data from observers
+                iteration.diagnosis = diagnosis_observer.get_messages()
+                iteration.heatmap = heatmap_observer.get_heatmap_data()
                 
                 # Record
                 iterations.append(iteration)
@@ -184,7 +208,7 @@ class ForgeEngine:
                     "number": i + 1,
                     "score": score.to_dict(),
                     "images": gen_result.images,
-                    "diagnosis": score.diagnosis(),
+                    "diagnosis": iteration.diagnosis,
                     "heatmap": iteration.heatmap,
                     "duration_ms": iteration.duration_ms,
                 })
@@ -215,7 +239,7 @@ class ForgeEngine:
                     "message": "Applying targeted mutations..."
                 })
                 
-                current_prompt, changes = self.mutator.mutate(current_prompt, score)
+                current_prompt, changes = self.mutator.mutate(current_prompt, score, lora_config=lora_config)
                 print(f"[ENGINE] After mutation: {current_prompt}", file=sys.stderr)
                 iteration.mutations = changes
                 prev_score = score

@@ -8,15 +8,20 @@ from typing import Optional
 class Mutator:
     """Orchestrates prompt mutations based on scoring results."""
 
-    def __init__(self):
-        self.rule_mutator = RuleMutator()
+    def __init__(self, convergence_threshold: float = 0.85):
+        self.rule_mutator = RuleMutator(convergence_threshold=convergence_threshold)
 
-    def mutate(self, prompt: dict, score) -> tuple[dict, list[str]]:
+    def mutate(self, prompt: dict, score, lora_config: Optional[dict] = None) -> tuple[dict, list[str]]:
         """Apply targeted mutations to fix lowest-scoring regions.
         Returns (mutated_prompt, list_of_changes).
         
         CRITICAL: Never strip or replace the original caption.
         Only APPEND detail to it.
+        
+        Args:
+            prompt: Current prompt data
+            score: Current ForgeScore
+            lora_config: Optional LoRA configuration for strategy selection
         """
         changes = []
         mutated = _deep_copy(prompt)
@@ -25,7 +30,8 @@ class Mutator:
         original_caption = mutated.get("caption", "")
 
         # Get mutations from rule engine based on score
-        mutations = self.rule_mutator.get_mutations(score, mutated)
+        # Pass lora_config so strategy can be selected contextually
+        mutations = self.rule_mutator.get_mutations(score, mutated, lora_config=lora_config)
 
         # Apply up to 3 mutations per iteration (don't over-mutate)
         for mutation in mutations[:3]:

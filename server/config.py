@@ -31,9 +31,19 @@ class Config:
     TEMPLATES_DIR: Path = PROJECT_ROOT / "workflows" / "templates"
     FRONTEND_DIR: Path = PROJECT_ROOT / "frontend"
     
+    # Config files for patterns
+    CONFIG_DIR: Path = PROJECT_ROOT / "config"
+    NODE_SIGNATURES_CONFIG: Path = CONFIG_DIR / "node_signatures.json"
+    CALIBRATION_CONFIG: Path = CONFIG_DIR / "calibration.json"
+    MODEL_CONFIG: Path = CONFIG_DIR / "models.json"
+    
+    # CLIP model configuration
+    CLIP_MODEL: str = os.getenv("CLIP_MODEL", "ViT-B-32")
+    CLIP_PRETRAINED: str = os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k")
+    
     @classmethod
     def ensure_dirs(cls):
-        for d in [cls.DATA_DIR, cls.OUTPUTS_DIR, cls.CACHE_DIR]:
+        for d in [cls.DATA_DIR, cls.OUTPUTS_DIR, cls.CACHE_DIR, cls.CONFIG_DIR]:
             d.mkdir(parents=True, exist_ok=True)
     
     @property

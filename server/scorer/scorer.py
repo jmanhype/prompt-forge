@@ -5,7 +5,10 @@ import torch
 import numpy as np
 from dataclasses import dataclass, field
 from PIL import Image
-from typing import Optional
+from pathlib import Path
+from typing import Optional, List
+
+from ..patterns.registry import CalibrationRegistry
 
 
 @dataclass
@@ -57,24 +60,40 @@ class ForgeScore:
 class Scorer:
     """Scores generated images against the target composition using CLIP."""
 
-    def __init__(self, threshold: float = 0.55):
+    def __init__(
+        self,
+        threshold: float = 0.85,
+        model_name: str = "ViT-B-32",
+        pretrained: str = "laion2b_s34b_b79k",
+        device: Optional[str] = None,
+        calibration_registry: Optional[CalibrationRegistry] = None
+    ):
         self.threshold = threshold
+        self.model_name = model_name
+        self.pretrained = pretrained
         self._clip_model = None
         self._clip_preprocess = None
         self._clip_tokenizer = None
-        self._device = None
+        self._device = device
+        
+        # Use registry for normalization, or create default
+        if calibration_registry:
+            self.calibration = calibration_registry
+        else:
+            self.calibration = CalibrationRegistry()
 
     def _ensure_clip(self):
         if self._clip_model is not None:
             return
         import open_clip
-        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self._device is None:
+            self._device = "cuda" if torch.cuda.is_available() else "cpu"
         self._clip_model, self._clip_preprocess, _ = (
-            open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
+            open_clip.create_model_and_transforms(self.model_name, pretrained=self.pretrained)
         )
         self._clip_model = self._clip_model.to(self._device)
         self._clip_model.eval()
-        self._clip_tokenizer = open_clip.get_tokenizer("ViT-B-32")
+        self._clip_tokenizer = open_clip.get_tokenizer(self.model_name)
 
     @torch.no_grad()
     def _clip_score(self, image: Image.Image, text: str) -> float:
@@ -89,24 +108,17 @@ class Scorer:
         txt_feat = txt_feat / txt_feat.norm(dim=-1, keepdim=True)
         return (img_feat @ txt_feat.T).item()
 
-    @staticmethod
-    def normalize(raw: float) -> float:
-        """Piecewise linear normalization calibrated on ViT-B-32 with Ideogram 4 outputs.
-
-        Calibration study (65 measurements, 5 images, 13 prompts):
+    def normalize(self, raw: float) -> float:
+        """Normalize raw CLIP score using calibration registry.
+        
+        Uses per-model calibration breakpoints loaded from config file.
+        Default calibration for ViT-B-32:
           raw < 0.15  → 0.00-0.15 (bad/wrong match)
           raw 0.15-0.22 → 0.15-0.50 (needs mutation)
           raw 0.22-0.30 → 0.50-0.85 (good/close match)
           raw > 0.30  → 0.85-1.00 (excellent/converge)
         """
-        if raw < 0.15:
-            return max(0.0, raw / 0.15 * 0.15)
-        elif raw < 0.22:
-            return 0.15 + (raw - 0.15) / 0.07 * 0.35
-        elif raw < 0.30:
-            return 0.50 + (raw - 0.22) / 0.08 * 0.35
-        else:
-            return min(1.0, 0.85 + (raw - 0.30) / 0.05 * 0.15)
+        return self.calibration.normalize(raw, self.model_name)
 
     def score(self, image: Image.Image, prompt_data: dict) -> ForgeScore:
         """Score an image against the target prompt data dict.

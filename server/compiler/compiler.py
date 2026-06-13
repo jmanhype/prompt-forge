@@ -119,6 +119,8 @@ class WorkflowCompiler:
         }
         
         Bbox format: [y_min, x_min, y_max, x_max] in 0-1000 scale.
+        
+        Note: User's caption passes through unchanged. LoRA weights handle style.
         """
         import sys
         
@@ -130,9 +132,9 @@ class WorkflowCompiler:
         
         print(f"\n[COMPILER] Building JSON prompt, caption ({len(caption)} chars): '{caption[:80]}...'", file=sys.stderr)
         
-        # Build structured JSON prompt
+        # Build structured JSON prompt - user's text passes through unchanged
         json_prompt = {
-            "high_level_description": caption or "A detailed photograph",
+            "high_level_description": caption or "A detailed image",
             "compositional_decomposition": {
                 "background": background or "Background and environment surrounding the subject.",
                 "elements": []
@@ -149,8 +151,6 @@ class WorkflowCompiler:
             bbox = elem.get("bbox")
             if not bbox or len(bbox) != 4:
                 # Default: center the element, size based on index
-                # First element: large center box
-                # Subsequent elements: smaller boxes around it
                 if i == 0:
                     bbox = [200, 150, 800, 850]  # Main subject: large center
                 else:
@@ -176,16 +176,6 @@ class WorkflowCompiler:
                 "bbox": [200, 150, 800, 850],
                 "description": caption or "Main subject"
             })
-        
-        # Add LoRA style hints if applicable
-        if lora_config:
-            triggers = lora_config.get("trigger_words", [])
-            if triggers and "ektachrome" in " ".join(triggers).lower():
-                # Prepend Ektachrome style to the description
-                json_prompt["high_level_description"] = (
-                    "Ektachrome film photography, vintage 1960s Kodak Ektachrome film, "
-                    "faded colors, visible grain, " + caption
-                )
         
         # Convert to JSON string
         result = json.dumps(json_prompt, indent=2)

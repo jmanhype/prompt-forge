@@ -1,0 +1,33 @@
+{
+  "clip": {
+    "ViT-B-32": {
+      "pretrained": "laion2b_s34b_b79k",
+      "description": "Fast, well-calibrated"
+    },
+    "ViT-L-14": {
+      "pretrained": "laion2b_s32b_b82k",
+      "description": "Higher quality, slower"
+    }
+  },
+  "unet": {
+    "ideogram4_fp8_scaled.safetensors": {
+      "weight_dtype": "fp8_e4m3fn",
+      "architecture": "ideogram4"
+    }
+  },
+  "clip_loader": {
+    "qwen3vl_8b_fp8_scaled.safetensors": {
+      "type": "ideogram4"
+    }
+  },
+  "vae": {
+    "flux2-vae.safetensors": {
+      "architecture": "flux2"
+    }
+  },
+  "unconditional": {
+    "ideogram4_unconditional-Q2_K.gguf": {
+      "architecture": "ideogram4"
+    }
+  }
+}
