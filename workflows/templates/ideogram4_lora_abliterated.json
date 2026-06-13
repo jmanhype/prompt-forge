@@ -21,11 +21,11 @@
   "3": {
     "class_type": "CLIPLoader",
     "inputs": {
-      "clip_name": "qwen3vl_8b_huihui_abliterated.safetensors",
+      "clip_name": "qwen3vl_8b_abliterated_fp8.safetensors",
       "type": "ideogram4"
     },
     "_meta": {
-      "title": "Load Ideogram 4 CLIP (Qwen3VL 8B Huihui Abliterated)"
+      "title": "Load Ideogram 4 CLIP (Qwen3VL 8B ABLITERATED)"
     }
   },
   "4": {
@@ -57,7 +57,7 @@
       "conditioning": ["5", 0]
     },
     "_meta": {
-      "title": "Zero Out (Negative)"
+      "title": "Negative Conditioning"
     }
   },
   "7": {
@@ -67,7 +67,7 @@
       "shift": 5.0
     },
     "_meta": {
-      "title": "AuraFlow Noise Schedule"
+      "title": "Model Sampling (Aura Flow)"
     }
   },
   "8": {
@@ -103,7 +103,7 @@
       "batch_size": 1
     },
     "_meta": {
-      "title": "Empty Latent"
+      "title": "Empty Latent Image"
     }
   },
   "18": {
@@ -114,7 +114,7 @@
       "scale_by": 0.93
     },
     "_meta": {
-      "title": "Track C: 0.93 Frequency Disruption"
+      "title": "Track C: 0.93 Latent Upscale"
     }
   },
   "11": {
@@ -132,7 +132,7 @@
       "sampler_name": "euler"
     },
     "_meta": {
-      "title": "Sampler Select"
+      "title": "KSampler Select"
     }
   },
   "13": {
@@ -144,7 +144,7 @@
       "denoise": 1.0
     },
     "_meta": {
-      "title": "Scheduler"
+      "title": "Basic Scheduler"
     }
   },
   "14": {
@@ -157,7 +157,7 @@
       "latent_image": ["18", 0]
     },
     "_meta": {
-      "title": "Sampler"
+      "title": "Sampler Custom Advanced"
     }
   },
   "15": {
@@ -166,7 +166,7 @@
       "vae_name": "flux2-vae.safetensors"
     },
     "_meta": {
-      "title": "Load VAE (Flux2)"
+      "title": "Load VAE"
     }
   },
   "16": {
@@ -182,7 +182,7 @@
   "17": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "forge_ideo4",
+      "filename_prefix": "forge_ideo4_abliterated",
       "images": ["16", 0]
     },
     "_meta": {
