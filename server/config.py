@@ -9,6 +9,11 @@ class Config:
     COMFYUI_URL: str = os.getenv("COMFYUI_URL", "http://127.0.0.1:8188")
     COMFYUI_ROOT: str = os.getenv("COMFYUI_ROOT", "")
     
+    # LLM for JSON generation (DashScope Qwen API or local)
+    LLM_URL: str = os.getenv("LLM_URL", "http://192.168.1.143:8080")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen")
+    LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+    
     # Florence-2
     FLORENCE_MODEL: str = os.getenv("FLORENCE_MODEL", "microsoft/Florence-2-base-ft")
     
