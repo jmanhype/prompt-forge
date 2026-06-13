@@ -1,752 +1,521 @@
-# PROMPT FORGE — System Architecture
+# Prompt Forge Architecture: Design Patterns
 
-> Closed-loop composition engine for local image generation.
-> Describe what you want. It generates, grades itself, and iterates until it matches.
+## Overview
 
-**Version:** 0.1.0-design
-**Author:** StraughterG
-**Date:** 2026-06-12
-
----
-
-## 1. Problem Statement
-
-Every image-to-prompt tool in existence is open-loop:
-
-```
-User → Prompt Tool → JSON/Text Prompt → ??? (user manually generates, evaluates, tweaks)
-```
-
-The user gets a prompt and prays it works. Feedback is entirely human. Iteration is manual.
-
-**Prompt Forge closes the loop:**
-
-```
-User → Description → Generate → Score → Diagnose → Mutate → Regenerate → Score → ... → Converged Result
-```
-
-The system doesn't give you a prompt. It gives you a **result that matches your intent**, with full iteration log showing how it got there.
+Prompt Forge had 18 hardcoded elements causing bugs (safety filter triggers, wrong
+subject matching, forced aesthetics). This document maps each to the design pattern
+that solves it, explains trade-offs, and provides implementation guidance.
 
 ---
 
-## 2. Core Principles
+## Pattern Summary
 
-1. **Closed loop over open loop** — generation without evaluation is guessing
-2. **Per-region scoring over global scoring** — one CLIP number lies; region heatmaps reveal truth
-3. **Connector over vendor** — speak to user's ComfyUI, never bundle models
-4. **Graceful degradation** — value never hits zero; scales with user's hardware
-5. **Composition as asset** — every successful run becomes reusable knowledge
-6. **LoRA-aware** — scan installed LoRAs, inject trigger words automatically
-
----
-
-## 3. System Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     FRONTEND (Vanilla JS)                       │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐   │
-│  │  Canvas   │  │ Iteration│  │  Heatmap │  │  Composition │   │
-│  │  Editor   │  │ Timeline │  │  Overlay │  │   Library    │   │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────┘   │
-│                     ↕ WebSocket + REST                          │
-├─────────────────────────────────────────────────────────────────┤
-│                     FASTAPI SERVER                              │
-│                                                                 │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────┐    │
-│  │  ANALYZER    │    │  COMPILER   │    │   CONNECTOR      │    │
-│  │  Florence-2  │───→│  JSON → WF  │───→│  ComfyUI API    │    │
-│  │  + CLIP-vocab│    │  capability │    │  queue + WS     │    │
-│  │  + palette   │    │  aware      │    │  + progress     │    │
-│  └─────────────┘    └─────────────┘    └─────────────────┘    │
-│         │                                      │               │
-│         ↓                                      ↓               │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────┐    │
-│  │  SCORER      │    │  MUTATOR    │    │   LORA DETECT   │    │
-│  │  Florence    │    │  rule-based │    │  scan loras/    │    │
-│  │  re-detect   │    │  + LLM opt  │    │  extract trig.  │    │
-│  │  + DINOv2    │    │  targeted   │    │  auto-inject    │    │
-│  │  per-region  │    │  mutations  │    │                 │    │
-│  └─────────────┘    └─────────────┘    └─────────────────┘    │
-│         │                  │                                    │
-│         └──────┬───────────┘                                    │
-│                ↓                                                │
-│         ┌─────────────┐    ┌─────────────┐                     │
-│         │  FORGE       │    │   STORE     │                     │
-│         │  ENGINE      │    │  SQLite     │                     │
-│         │  convergence │    │  + FTS5     │                     │
-│         │  loop        │    │  + images   │                     │
-│         └─────────────┘    └─────────────┘                     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-                    ↕
-┌─────────────────────────────────────────────────────────────────┐
-│              USER'S COMFYUI INSTANCE (external)                 │
-│  /object_info  /prompt  /queue  ws://history                   │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Pattern | Purpose | Solves Elements | Key Benefit |
+|---------|---------|-----------------|-------------|
+| **Strategy** | Swappable enrichment approaches | #2, #3, #11, #12, #13, #14 | Context-aware, no forced aesthetics |
+| **Factory** | Component creation | #4, #8, #17 | Configurable, auto-discovery |
+| **Observer** | Score feedback decoupling | #10, #15, #18 | Derived thresholds, frontend colors |
+| **Registry** | Configurable values | #6, #9 | External config, no code edits |
+| **Template Method** | Workflow/prompt structure | #2, #4, #5, #17 | Parameterized skeleton |
+| **Null Object** | Safe defaults | All patterns | No null checks, graceful degradation |
 
 ---
 
-## 4. Component Design
+## 1. STRATEGY PATTERN
 
-### 4.1 Analyzer
+**File:** `server/patterns/strategy.py`
 
-**Purpose:** Turn an image or text description into structured composition data.
+### Problem
+Hardcoded enrichment lists forced Ektachrome film aesthetics on everything:
+- `FILM_DETAILS` → "cyan color shift", "film grain" on a spaceship
+- `CAMERA_DETAILS` → "flat even lighting" on dramatic scenes
+- `SETTING_DETAILS` → "signs of age and weathering" triggering safety filter
+- `SUBJECT_ENRICHMENTS` → "dog" matched "dogman", "man" matched "wolfman"
 
-**Modes:**
-- **Image mode:** Florence-2-base detects objects, bboxes, captions, OCR regions
-- **Text mode:** LLM (Qwen/GLM) parses natural language into structured JSON
+### Solution
+Define `EnrichmentStrategy` interface with concrete implementations:
 
-**Florence-2 Ladder:**
+```
+EnrichmentStrategy (interface)
+├── NoEnrichment       (Null Object - pass through)
+├── FilmEnrichment     (only when user asks for film/archival)
+├── DigitalEnrichment  (when user asks for photo/digital)
+├── IllustrationEnrichment (when user asks for art/painting)
+└── ConceptArtEnrichment (when user asks for fantasy/sci-fi)
+```
 
-| Model | Size | VRAM | Speed | Use Case |
-|-------|------|------|-------|----------|
-| Florence-2-base-ft | 230MB | CPU OK | ~2s | Default — scene caption + bbox |
-| Florence-2-large-ft | 770MB | ~4GB | ~4s | Higher accuracy, complex scenes |
-| Qwen2.5-VL-7B (opt) | 14GB | 3090 | ~8s | Style extraction, complex prompts |
+### How It Works
 
-**Style Extraction Pipeline:**
-1. CLIP-interrogator vocab lookup (zero-LLM, instant)
-2. Optional: Qwen-VL for nuanced style fields
-3. Merge into Ideogram JSON `style_description`
+```python
+# Factory selects strategy based on context
+strategy = EnrichmentFactory.create(prompt, lora_config)
 
-**Output Schema:**
+# Strategy enriches only if applicable
+if strategy.should_apply(prompt, lora_config):
+    caption = strategy.enrich_caption(caption)
+    elements = strategy.enrich_elements(elements)
+```
+
+### Key Method: `should_apply()`
+Each strategy checks if it's relevant:
+- `FilmEnrichment.should_apply()` → True if prompt mentions "film", "archival", "vintage", or LoRA contains "ektachrome"
+- `ConceptArtEnrichment.should_apply()` → True if prompt mentions "fantasy", "dragon", "robot", "creature"
+- `NoEnrichment.should_apply()` → Always True (fallback)
+
+### Trade-offs
+| Pro | Con |
+|-----|-----|
+| No forced aesthetics | More code (interface + implementations) |
+| Context-aware enrichment | Need to determine which strategy to use |
+| Easy to add new aesthetics | Strategies must be well-designed |
+| User intent preserved | Testing requires multiple strategy mocks |
+
+### Implementation Notes
+- Each strategy file is self-contained (can be added/removed independently)
+- `NoEnrichment` is the Null Object default
+- Strategies are stateless (can be reused across requests)
+- `should_apply()` uses keyword matching — could be enhanced with LLM classification
+
+---
+
+## 2. FACTORY PATTERN
+
+**File:** `server/patterns/factory.py`
+
+### Problem
+Hardcoded component creation:
+- `open_clip.create_model_and_transforms("ViT-B-32", ...)` — model locked in code
+- LoRA detection forced Ektachrome suffix on prompts
+- Workflow resolution hardcoded to 768×768
+
+### Solution
+Factory classes that create components from configuration:
+
+```
+EnrichmentFactory.create(prompt, lora_config, preferred) → EnrichmentStrategy
+ScorerFactory.create_scorer(model_name, pretrained, threshold) → Scorer
+ScorerFactory.create_calibrated_scorer(model, calibration_data) → Scorer
+WorkflowFactory.create_compiler(comfyui_url, templates_dir) → WorkflowCompiler
+```
+
+### How It Works
+
+```python
+# Enrichment: auto-select based on context
+strategy = EnrichmentFactory.create(prompt, lora_config)
+
+# Scorer: user can specify model
+scorer = ScorerFactory.create_scorer(
+    model_name=os.getenv("CLIP_MODEL", "ViT-B-32"),
+    pretrained=os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k"),
+    threshold=config.CONVERGENCE_THRESHOLD
+)
+
+# Workflow: auto-detect capabilities
+compiler = await WorkflowFactory.create_compiler(
+    comfyui_url=config.COMFYUI_URL,
+    templates_dir=str(config.TEMPLATES_DIR)
+)
+```
+
+### Trade-offs
+| Pro | Con |
+|-----|-----|
+| Centralized creation logic | Extra abstraction layer |
+| Configuration-driven | Factory can become complex |
+| Easy to add new variants | Need to document factory methods |
+| Testable (inject mock factories) | Runtime overhead for factory lookup |
+
+---
+
+## 3. OBSERVER PATTERN
+
+**File:** `server/patterns/observer.py`
+
+### Problem
+Hardcoded score feedback:
+- Diagnosis thresholds: `if score.style < 0.3` — magic numbers
+- Heatmap colors in backend: `color = "#22c55e"` — UI concern in server code
+- Mutation triggers: `if score.overall < 0.4` — not derived from convergence threshold
+
+### Solution
+Observers subscribe to score updates and react independently:
+
+```
+ObserverManager
+├── DiagnosisObserver    → generates diagnosis messages (thresholds from config)
+├── HeatmapObserver      → generates heatmap data (NO colors — frontend handles)
+├── MutationTriggerObserver → decides when to mutate (derived from threshold)
+└── LoggingObserver      → logs score history
+```
+
+### How It Works
+
+```python
+# Set up observers
+manager = ObserverManager()
+diagnosis = DiagnosisObserver(convergence_threshold=0.85)
+heatmap = HeatmapObserver()
+mutation = MutationTriggerObserver(convergence_threshold=0.85)
+
+manager.register(diagnosis)
+manager.register(heatmap)
+manager.register(mutation)
+
+# When score is computed
+manager.notify_all(score, iteration)
+
+# Each observer has its own data
+messages = diagnosis.get_messages()
+heatmap_data = heatmap.get_heatmap_data()
+decision = mutation.get_mutation_decision()
+```
+
+### Key Insight: Derived Thresholds
+```python
+# DiagnosisObserver derives thresholds from convergence threshold
+self.style_threshold = convergence_threshold * 0.6    # 0.85 * 0.6 = 0.51
+self.subject_threshold = convergence_threshold * 0.6  # 0.51
+self.overall_threshold = convergence_threshold * 0.4  # 0.34
+```
+
+Change the convergence threshold → all diagnosis thresholds update automatically.
+
+### HeatmapObserver: No Colors
+```python
+# Backend sends raw scores
+{
+    "regions": [
+        {"id": "0", "label": "subject", "score": 0.42, "bbox": [...]}
+    ]
+}
+
+# Frontend CSS handles coloring:
+# .heatmap-region[data-score-low] { background: #ef4444; }
+# .heatmap-region[data-score-mid] { background: #eab308; }
+# .heatmap-region[data-score-high] { background: #22c55e; }
+```
+
+### Trade-offs
+| Pro | Con |
+|-----|-----|
+| Decoupled scoring from feedback | Event ordering can matter |
+| Add observers without changing scorer | Harder to debug event chains |
+| Thresholds derived, not hardcoded | Slight performance overhead |
+| Frontend handles presentation | Observers must be stateless or careful with state |
+
+---
+
+## 4. REGISTRY PATTERN
+
+**File:** `server/patterns/registry.py`
+
+### Problem
+Hardcoded values that require code edits to change:
+- `NODE_SIGNATURES` dict — new ComfyUI nodes = code change
+- Normalization breakpoints — new CLIP model = code change
+- Model filenames — different installation = code change
+
+### Solution
+Load from config files, provide defaults, allow runtime registration:
+
+```
+NodeRegistry          → ComfyUI node detection signatures
+CalibrationRegistry   → Per-model CLIP normalization breakpoints
+ThresholdRegistry     → Derived scoring/mutation thresholds
+ModelRegistry         → Model names, paths, architectures
+```
+
+### How It Works
+
+```python
+# Load from config file
+node_reg = NodeRegistry(config_path=Path("config/node_signatures.json"))
+cal_reg = CalibrationRegistry(config_path=Path("config/calibration.json"))
+
+# Auto-detect capabilities using registry
+available_nodes = set(object_info.keys())
+has_ideogram4 = node_reg.check_capability("has_ideogram4", available_nodes)
+
+# Normalize score using registry
+normalized = cal_reg.normalize(raw_score, "ViT-B-32")
+
+# Register new model at runtime
+model_reg.register("clip", "ViT-L-14-336", {
+    "pretrained": "openai",
+    "description": "Higher resolution, slower"
+})
+```
+
+### Config File Example: `config/node_signatures.json`
 ```json
 {
-  "caption": "A woman standing in front of a brutalist building...",
-  "background": "Overcast sky, concrete plaza...",
-  "palette": ["#8B8680", "#A0937D", "#C4B7A6"],
-  "elements": [
-    {
-      "id": "e1",
-      "type": "obj",
-      "label": "woman",
-      "description": "Woman holding clipboard, facing camera",
-      "bbox": [0.3, 0.2, 0.5, 0.9],
-      "confidence": 0.94
-    },
-    {
-      "id": "e2",
-      "type": "obj",
-      "label": "building",
-      "description": "Brutalist concrete building with geometric repetition",
-      "bbox": [0.0, 0.0, 1.0, 0.6],
-      "confidence": 0.91
-    }
-  ],
-  "style_description": {
-    "aesthetics": "Desolate, industrial, stark",
-    "lighting": "Overcast, diffused, flat",
-    "medium": "Photograph",
-    "art_style": "ektachrome"
+  "has_ideogram4": ["IdeogramV4", "Ideogram4Scheduler", "CLIPLoader"],
+  "has_flux": ["CLIPTextEncodeFlux", "ModelSamplingFlux"],
+  "has_gligen": ["GLIGENLoader", "GLIGENTextBoxApply"]
+}
+```
+
+### Config File Example: `config/calibration.json`
+```json
+{
+  "ViT-B-32": {
+    "breakpoints": [[0.15, 0.0, 0.15], [0.22, 0.15, 0.35], [0.30, 0.50, 0.35], [0.35, 0.85, 0.15]],
+    "description": "65 measurements, Ideogram 4 outputs"
+  },
+  "ViT-L-14": {
+    "breakpoints": [[0.20, 0.0, 0.15], [0.28, 0.15, 0.35], [0.36, 0.50, 0.35], [0.42, 0.85, 0.15]],
+    "description": "Needs calibration study"
   }
 }
 ```
 
-### 4.2 Compiler
+### Trade-offs
+| Pro | Con |
+|-----|-----|
+| No code edits for new configs | Config loading overhead |
+| Version-controlled configuration | Need to handle missing/invalid configs |
+| Runtime updates possible | Config file management |
+| Defaults when config missing | Testing requires config fixtures |
 
-**Purpose:** Convert structured composition JSON into a ComfyUI workflow.
+---
 
-**Capability Detection:**
-On startup, query ComfyUI `/object_info` and build a capability map:
+## 5. TEMPLATE METHOD PATTERN
+
+**File:** `server/patterns/template.py`
+
+### Problem
+Hardcoded workflow structure:
+- Resolution: 768×768 locked in template JSON
+- Steps: 28 locked in template
+- Caption template: `f"{subject} {setting}. Professional photography..."` forces photography
+- Caption prefix: `f"A photograph of {caption}"` forces medium
+- LoRA suffix: hardcoded Ektachrome text appended
+
+### Solution
+`WorkflowTemplate` defines the skeleton, parameters fill in specifics:
+
+```
+WorkflowTemplate.compile(prompt_text, seed)
+├── _build_model_loaders()     → UNET, CLIP, VAE, unconditional
+├── _build_lora_loader()       → LoRA injection (if enabled)
+├── _build_prompt_encoding()   → CLIPTextEncode + ConditioningZeroOut
+├── _build_noise_schedule()    → AuraFlow + CFGOverride
+├── _build_guider()            → DualModelGuider
+├── _build_sampling()          → SamplerCustomAdvanced
+└── _build_decode_and_save()   → VAEDecode + SaveImage
+```
+
+`PromptTemplate` builds prompts without forcing a medium:
 
 ```python
-capabilities = {
-    "gligen": "GLIGENLoader" in node_info,      # SD1.5 native bbox
-    "attention_couple": "AttentionCouple" in node_info,  # SDXL regional
-    "ipadapter_region": "IPAdapterRegional" in node_info,  # IPAdapter regions
-    "flux_guidance": "FluxGuidance" in node_info,  # Flux native
-    "regional_condition": "RegionalConditioning" in node_info,
-}
+# OLD: Forces "photograph" on everything
+f"A photograph of {caption}. Professional photography, sharp focus, natural daylight."
+
+# NEW: User's text passes through, context added only if missing
+PromptTemplate()
+    .with_subject("a wolfman in a dark castle")  # User's exact words
+    .build()  # → "a wolfman in a dark castle"
 ```
 
-**Template Selection (priority order):**
-
-| Priority | Strategy | Requires | Models |
-|----------|----------|----------|--------|
-| 1 | GLIGEN | GLIGENLoader | SD1.5 |
-| 2 | Attention Couple | AttentionCouple | SDXL |
-| 3 | IPAdapter Regional | IPAdapterRegional | SDXL/Flux |
-| 4 | Mega-Prompt | Nothing | Any |
-
-**Mega-Prompt Fallback:**
-When no regional nodes are available, compile JSON into a structured long prompt:
-```
-[woman:1.3] standing in front of [brutalist concrete building:1.2], 
-holding clipboard, facing camera, overcast sky, diffused lighting.
-Style: ektachrome, vintage 1960s Kodak Ektachrome film, faded colors, 
-visible grain, desolate industrial.
-```
-
-This works well with Flux, SDXL (with prompt scheduling), and Qwen-Image.
-
-**LoRA Injection:**
-- Scan user's `loras/` folder on startup
-- Parse filenames for trigger words (e.g., `ektachrome_style_v1` → trigger: "ektachrome")
-- Match style_description keywords to installed LoRAs
-- Auto-inject LoRA loader nodes + trigger words into prompt
-
-### 4.3 Connector
-
-**Purpose:** Communicate with user's ComfyUI instance.
-
-**Pattern (from Camera Lab):**
-- `COMFYUI_URL` in .env (default: http://127.0.0.1:8188)
-- Never vendor ComfyUI code or models
-- `check_setup.py` validates connectivity + model availability
-- Graceful degradation banner when ComfyUI unreachable
-
-**API Endpoints Used:**
-```
-GET  /object_info          → capability detection
-POST /prompt               → queue workflow
-GET  /queue                → check queue status
-WS   /ws                   → real-time progress
-GET  /view?filename=X      → retrieve generated image
-GET  /history/{prompt_id}  → get outputs after completion
-```
-
-**Generation Flow:**
-```python
-async def generate(workflow: dict) -> GenerationResult:
-    # 1. Queue the prompt
-    resp = await client.post(f"{url}/prompt", json={"prompt": workflow})
-    prompt_id = resp["prompt_id"]
-    
-    # 2. Connect WebSocket for progress
-    async with websockets.connect(ws_url) as ws:
-        while True:
-            msg = json.loads(await ws.recv())
-            if msg["type"] == "executed" and msg["data"]["prompt_id"] == prompt_id:
-                break
-            yield_progress(msg)  # forward to frontend
-    
-    # 3. Retrieve outputs
-    history = await client.get(f"{url}/history/{prompt_id}")
-    images = extract_images(history[prompt_id])
-    return GenerationResult(images=images, prompt_id=prompt_id)
-```
-
-### 4.4 Scorer
-
-**Purpose:** Evaluate generated output against user's intent. Per-region, not global.
-
-**Scoring Pipeline:**
-
-```
-Generated Image
-       │
-       ↓
-  Florence-2 Re-detect
-  (same model as analyzer for consistency)
-       │
-       ├──→ Bbox IoU per element (spatial accuracy)
-       │    target bbox vs detected bbox
-       │    IoU > 0.5 = pass, IoU > 0.7 = good
-       │
-       ├──→ DINOv2 Per-Region Similarity (visual match)
-       │    crop each target region from source + output
-       │    compute cosine similarity of embeddings
-       │    > 0.8 = match, > 0.6 = partial
-       │
-       ├──→ CLIP Global Score (overall vibe check)
-       │    text prompt vs image embedding
-       │    secondary signal only
-       │
-       └──→ Element Presence Check
-            did all requested elements appear?
-            missing elements = hard failure on that region
-```
-
-**Composite Score:**
-```python
-def composite_score(regions: list[RegionScore]) -> ForgeScore:
-    return ForgeScore(
-        composition=weighted_mean([r.bbox_iou for r in regions]),
-        style=clip_global_score,
-        subject=weighted_mean([r.dino_sim for r in regions if r.is_primary]),
-        overall=0.4 * composition + 0.3 * style + 0.3 * subject,
-        regions=regions,  # per-region detail for heatmap
-        converged=overall >= threshold,  # default 0.85
-    )
-```
-
-**Why DINOv2 over CLIP for scoring:**
-- CLIP saturates: "both images contain a dog" → high score even if composition is wrong
-- DINOv2 captures structural/visual similarity: same pose, same framing, same lighting
-- DINOv2-vit-base is 330MB, runs on CPU in ~0.5s per crop
-- CLIP kept as secondary "vibe check" only
-
-### 4.5 Mutator
-
-**Purpose:** Given scoring results, modify the prompt to fix what failed.
-
-**Rule-Based Mutations (primary, no LLM needed):**
-
-| Failure Mode | Mutation |
-|---|---|
-| Low bbox IoU (element misplaced) | Shift bbox toward detected position, add negative prompt for wrong area |
-| Missing element | Increase element weight [element:1.5], add to negative: "no [element]" |
-| Wrong style | Strengthen style_description keywords, add style LoRA if available |
-| Low DINOv2 similarity | Add more descriptive detail to element description |
-| Over-triggered LoRA | Reduce LoRA strength by 0.1 |
-| Element too large/small | Adjust bbox size toward detected scale |
-
-**Targeted Mutation:**
-Only mutate the lowest-scoring regions. Don't touch what works.
+### How It Works
 
 ```python
-def mutate(prompt: ForgePrompt, score: ForgeScore) -> ForgePrompt:
-    # Sort regions by score ascending (worst first)
-    failures = sorted(score.regions, key=lambda r: r.composite)[:3]
-    
-    mutated = prompt.copy()
-    for region in failures:
-        mutation = select_mutation(region.failure_mode)
-        mutated.apply(region.id, mutation)
-    
-    return mutated
+# Create template with overrides
+template = WorkflowTemplate(overrides={
+    'width': 1024,        # Override resolution
+    'height': 768,
+    'steps': 40,          # Override steps
+    'cfg': 5.0,           # Override CFG
+    'lora_enabled': True,
+    'lora_name': 'ektachrome_style_v1.safetensors',
+})
+
+# Compile workflow
+workflow = template.compile(prompt_text=json_prompt, seed=42)
+
+# Build prompt without forcing medium
+prompt = PromptTemplate()
+    .with_subject(user_input)
+    .with_setting("in a moonlit forest clearing")
+    .with_lora_triggers(["ektachrome"])  # Only if LoRA loaded
+    .build()
 ```
 
-**LLM-Assisted Mutations (optional):**
-When rule-based mutations plateau (3+ iterations with <5% improvement):
-- Send current prompt + score + failure descriptions to LLM
-- Ask for 3 alternative prompt rewrites targeting specific failures
-- Pick the one with highest predicted improvement
+### Trade-offs
+| Pro | Con |
+|-----|-----|
+| Clear structure: fixed skeleton, variable parts | Can become complex with many parameters |
+| Per-request configuration | Radical departures need new templates |
+| User's text passes through unchanged | Need to document all parameters |
+| No forced medium/aesthetic | Template bloat risk |
 
-### 4.6 Forge Engine
+---
 
-**Purpose:** Orchestrate the convergence loop.
+## 6. NULL OBJECT PATTERN
 
-**Session Lifecycle:**
+**File:** `server/patterns/null.py`
+
+### Problem
+Components might be unavailable (Florence-2 not installed, ComfyUI down, no LoRAs).
+Code needs null checks everywhere or crashes.
+
+### Solution
+Null implementations that are safe to call but do nothing:
+
+```
+NullEnrichment     → enrich_caption() returns input unchanged
+NullScorer         → score() returns neutral 0.5 scores
+NullMutator        → mutate() returns prompt unchanged
+NullConnector      → generate() returns mock results
+NullAnalyzer       → analyze() returns minimal analysis
+NullLoRADetector   → match() always returns None
+```
+
+### How It Works
+
 ```python
-class ForgeSession:
-    async def run(self, description: str, max_iterations: int = 5) -> ForgeResult:
-        # 1. Analyze input
-        analysis = await self.analyzer.analyze(description)
-        prompt = self.compiler.build_prompt(analysis)
-        prompt = self.lora_detector.inject(prompt)
-        
-        iterations = []
-        for i in range(max_iterations):
-            # 2. Compile to workflow
-            workflow = self.compiler.compile(prompt, self.capabilities)
-            
-            # 3. Generate
-            result = await self.connector.generate(workflow)
-            
-            # 4. Score
-            score = await self.scorer.score(result.images, analysis)
-            
-            # 5. Record iteration
-            iteration = Iteration(
-                number=i+1,
-                prompt=prompt,
-                images=result.images,
-                score=score,
-                diagnosis=score.diagnosis(),
-            )
-            iterations.append(iteration)
-            yield iteration  # stream to frontend
-            
-            # 6. Check convergence
-            if score.converged:
-                break
-            
-            # 7. Mutate
-            if score.improvement_rate < 0.05 and i >= 2:
-                prompt = await self.mutator.mutate_llm(prompt, score)
-            else:
-                prompt = self.mutator.mutate(prompt, score)
-        
-        # 8. Save to composition library
-        await self.store.save_composition(iterations[-1], description)
-        
-        return ForgeResult(iterations=iterations, final=iterations[-1])
+# Instead of checking if components exist:
+if analyzer is not None:
+    analysis = analyzer.analyze(image)
+else:
+    analysis = default_analysis
+
+# Just use the component (might be Null):
+analysis = analyzer.analyze(image)  # Works even if NullAnalyzer
 ```
 
-**Convergence Criteria:**
-- Overall score >= 0.85 (configurable threshold)
-- No region below 0.6
-- Max 5 iterations (configurable, prevents infinite loops)
-- Improvement rate < 2% for 2 consecutive iterations (plateau detection)
-
-### 4.7 Store
-
-**Purpose:** Persist composition library, iteration logs, user preferences.
-
-**SQLite Schema:**
-```sql
--- Composition library
-CREATE TABLE compositions (
-    id TEXT PRIMARY KEY,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    description TEXT,
-    style TEXT,
-    final_prompt JSON,
-    final_score REAL,
-    iteration_count INTEGER,
-    tags TEXT,  -- comma-separated for FTS
-    image_path TEXT
-);
-
--- FTS5 for searching compositions by description/style
-CREATE VIRTUAL TABLE compositions_fts USING fts5(
-    description, style, tags, content=compositions
-);
-
--- Full iteration logs (taste model training data)
-CREATE TABLE iterations (
-    id TEXT PRIMARY KEY,
-    composition_id TEXT REFERENCES compositions(id),
-    iteration_number INTEGER,
-    prompt JSON,
-    score JSON,
-    diagnosis JSON,
-    image_path TEXT,
-    duration_ms INTEGER
-);
-
--- User preferences
-CREATE TABLE preferences (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
-
--- LoRA registry (cached scan results)
-CREATE TABLE loras (
-    filename TEXT PRIMARY KEY,
-    trigger_words TEXT,
-    style_tags TEXT,
-    last_scanned TIMESTAMP
-);
-```
-
-**Taste Model Intake:**
-Every iteration (including failed ones) is logged with:
-- Input prompt (JSON)
-- Generated image (path)
-- Per-region scores
-- Composite score
-- Diagnosis
-- Whether this was the final/selected result
-
-This is labeled preference data: "this prompt produced this result with this score." Over time, this trains a taste model that predicts scores from prompts alone — enabling pre-filtering before generation.
-
-### 4.8 LoRA Detector
-
-**Purpose:** Scan user's installed LoRAs, extract trigger words, match to style requests.
-
-**Scanning:**
-```python
-def scan_loras(loras_dir: str) -> list[LoRA]:
-    loras = []
-    for f in Path(loras_dir).glob("*.safetensors"):
-        # Extract trigger from filename convention
-        trigger = extract_trigger_from_name(f.stem)
-        # Try reading metadata from safetensors header
-        metadata = read_safetensors_metadata(f)
-        loras.append(LoRA(
-            filename=f.name,
-            trigger_words=metadata.get("trigger_words", [trigger]),
-            style_tags=metadata.get("tags", []),
-            path=str(f),
-        ))
-    return loras
-```
-
-**Auto-Injection:**
-When user's description mentions a style that matches an installed LoRA:
-1. Add LoRA loader node to workflow
-2. Insert trigger word into style_description
-3. Set default strength (0.8 for style LoRAs, 0.6 for character LoRAs)
+### Trade-offs
+| Pro | Con |
+|-----|-----|
+| No null checks needed | Can hide real errors |
+| Safe defaults | Null objects must be truly safe |
+| Simplifies client code | Need null for every interface |
+| Graceful degradation | Testing needs both real and null |
 
 ---
 
-## 5. API Design
+## MAPPING: All 18 Hardcoded Elements → Patterns
 
-### REST Endpoints
+| # | Element | Severity | Pattern | File |
+|---|---------|----------|---------|------|
+| 1 | setting_map (30 entries) | **Critical** | Strategy + Template | engine.py |
+| 2 | Caption template | **High** | Template | engine.py |
+| 3 | Fallback setting | **High** | Null + Strategy | engine.py |
+| 4 | LoRA film suffix | **High** | Strategy | compiler.py |
+| 5 | Caption prefix | **Medium** | Template | compiler.py |
+| 6 | NODE_SIGNATURES | **Low** | Registry | capability.py |
+| 7 | strategy_description | **Low** | Registry | capability.py |
+| 8 | CLIP model selection | **Medium** | Factory + Registry | scorer.py |
+| 9 | Normalization breakpoints | **Medium** | Registry | scorer.py |
+| 10 | Diagnosis thresholds | **Low** | Observer | scorer.py |
+| 11 | FILM_DETAILS | **Critical** | Strategy | rules.py |
+| 12 | CAMERA_DETAILS | **High** | Strategy | rules.py |
+| 13 | SETTING_DETAILS | **Critical** | Strategy (delete) | rules.py |
+| 14 | SUBJECT_ENRICHMENTS | **High** | Strategy + Null | rules.py |
+| 15 | Mutation thresholds | **Medium** | Observer | rules.py |
+| 16 | LLM parameters | **Low** | Registry | llm.py |
+| 17 | Workflow template values | **Medium** | Template + Registry | template JSON |
+| 18 | Heatmap colors | **Low** | Observer (remove) | heatmap.py |
+
+---
+
+## Implementation Roadmap
+
+### Phase 1: Critical Fixes (Day 1)
+1. **Delete** `setting_map` entirely → pass user text through as-is
+2. **Delete** `SETTING_DETAILS` → triggers safety filter
+3. **Delete** LoRA film suffix in compiler → LoRA weights handle style
+4. **Replace** `SUBJECT_ENRICHMENTS` with `NullEnrichment` default
+
+### Phase 2: Strategy Pattern (Day 2)
+1. Create `EnrichmentStrategy` interface
+2. Implement `NoEnrichment`, `FilmEnrichment`, `ConceptArtEnrichment`
+3. Wire `EnrichmentFactory` into mutator
+4. Mutator calls `strategy.should_apply()` before enriching
+
+### Phase 3: Observer Pattern (Day 3)
+1. Create `ObserverManager` in engine
+2. Implement `DiagnosisObserver` with derived thresholds
+3. Implement `HeatmapObserver` (no colors)
+4. Implement `MutationTriggerObserver`
+5. Move heatmap colors to frontend CSS
+
+### Phase 4: Registry Pattern (Day 4)
+1. Create `config/` directory with JSON files
+2. Implement `NodeRegistry` loading from `config/node_signatures.json`
+3. Implement `CalibrationRegistry` loading from `config/calibration.json`
+4. Implement `ModelRegistry` for model discovery
+
+### Phase 5: Template Pattern (Day 5)
+1. Create `WorkflowTemplate` class
+2. Create `PromptTemplate` builder
+3. Replace hardcoded compiler with template-based compilation
+4. Add per-request parameter overrides
+
+### Phase 6: Factory + Null (Day 6)
+1. Implement all factories
+2. Implement all null objects
+3. Wire factories into engine initialization
+4. Add graceful degradation for missing components
+
+---
+
+## Architecture Diagram
 
 ```
-POST /api/analyze
-  Body: multipart/form-data { file: image } OR { text: description }
-  Response: { elements, style, palette, caption }
-
-POST /api/forge
-  Body: { description, options: { max_iterations, threshold, model } }
-  Response: SSE stream of iterations
-
-GET  /api/forge/{session_id}
-  Response: { iterations[], status, final_score }
-
-GET  /api/library
-  Query: ?q=brutalist&style=ektachrome
-  Response: { compositions[] }
-
-GET  /api/loras
-  Response: { loras: [{ filename, triggers, tags }] }
-
-POST /api/rescan-loras
-  Response: { count, loras[] }
-
-GET  /api/capabilities
-  Response: { comfyui: bool, nodes: {}, models: [] }
-
-WS   /ws/forge/{session_id}
-  Messages: { type: "iteration"|"progress"|"converged"|"error", data: {} }
-```
-
-### WebSocket Message Types
-
-```json
-{"type": "connected", "data": {"session_id": "abc123"}}
-{"type": "analyzing", "data": {"status": "Florence-2 detecting..."}}
-{"type": "generating", "data": {"iteration": 1, "progress": 45}}
-{"type": "scoring", "data": {"iteration": 1}}
-{"type": "iteration", "data": {"number": 1, "score": {...}, "image_url": "...", "diagnosis": [...]}}
-{"type": "mutating", "data": {"changes": ["shifted woman bbox right", "added 'raw concrete' to building"]}}
-{"type": "converged", "data": {"iterations": 3, "final_score": 0.89, "final_image": "..."}}
-{"type": "error", "data": {"message": "ComfyUI unreachable", "fix": "Start ComfyUI at http://127.0.0.1:8188"}}
+User Input: "a wolfman"
+    │
+    ▼
+┌─────────────────────┐
+│   ForgeEngine       │
+│                     │
+│  1. Parse input     │──→ PromptTemplate.with_subject("a wolfman").build()
+│     (no rewriting)  │    → "a wolfman"  (untouched!)
+│                     │
+│  2. Select strategy │──→ EnrichmentFactory.create(prompt, lora)
+│                     │    → ConceptArtEnrichment (matched "wolfman")
+│                     │
+│  3. Build JSON      │──→ PromptTemplate.build_json()
+│     with bbox       │    → {"high_level_description": "a wolfman", ...}
+│                     │
+│  4. Compile         │──→ WorkflowTemplate.compile(json_prompt)
+│     workflow        │    → Complete ComfyUI workflow dict
+│                     │
+│  5. Generate        │──→ ComfyUIConnector (or NullConnector)
+│                     │    → Image or error
+│                     │
+│  6. Score           │──→ ScorerFactory.create_scorer()
+│                     │    → ForgeScore
+│                     │
+│  7. Observe         │──→ ObserverManager.notify_all(score)
+│                     │    → Diagnosis, Heatmap, MutationTrigger
+│                     │
+│  8. Mutate          │──→ Strategy.enrich_caption() (if applicable)
+│     (if needed)     │    → Enhanced prompt for next iteration
+└─────────────────────┘
 ```
 
 ---
 
-## 6. Frontend Architecture
+## Key Principles
 
-**Stack:** Vanilla JS (ES Modules) + CSS Grid + Canvas API
+1. **User's text is sacred.** Never rewrite it. Only append context the user hasn't specified.
 
-**No framework.** No build step. No npm install. Open index.html.
+2. **JSON format is the bypass.** The structured JSON with bounding boxes is what
+   bypasses the safety filter. Enrichment is optional and contextual.
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  HEADER: Logo + New Forge + Library + Settings              │
-├────────────┬─────────────────────────────────┬───────────────┤
-│  INPUT     │        CANVAS                   │   SCORES      │
-│  PANEL     │                                 │   PANEL       │
-│            │  ┌─────────────────────────┐    │               │
-│  Text      │  │                         │    │  Overall: 89% │
-│  description│  │   Generated Image       │    │  ████████░░   │
-│  or        │  │   with bbox overlay     │    │               │
-│  image     │  │   and heatmap colors    │    │  Composition  │
-│  drop zone │  │                         │    │  Style        │
-│            │  └─────────────────────────┘    │  Subject      │
-│  Elements  │                                 │               │
-│  list with │  ITERATION TIMELINE             │  Region       │
-│  bbox      │  [iter1] [iter2] [iter3*]       │  Details      │
-│  editor    │  ←→ scrub between iterations    │  (heatmap)    │
-│            │                                 │               │
-├────────────┴─────────────────────────────────┴───────────────┤
-│  STATUS BAR: "Iteration 2/5 — Mutating: shifted bbox right" │
-└──────────────────────────────────────────────────────────────┘
-```
+3. **LoRA weights handle style.** Don't duplicate the LoRA's aesthetic in text.
+   If a LoRA is loaded, its weights apply the style. Text triggers are separate.
 
-**Key Interactions:**
-- Type description or drop image → auto-analyze → show elements
-- Edit elements (drag bboxes, rename, add/remove) → live JSON preview
-- Click "Forge" → WebSocket connects → iterations stream in
-- Each iteration shows: image, score bars, diagnosis text
-- Click iteration in timeline → canvas updates with that iteration's image + heatmap
-- Converged state → save to library, copy final prompt, download image
+4. **Thresholds derive from convergence.** All scoring thresholds should be
+   calculated from the convergence threshold, not hardcoded independently.
 
----
+5. **Frontend handles presentation.** Colors, fonts, layouts are CSS. Backend
+   sends data. Frontend renders it.
 
-## 7. Alternatives Evaluated
+6. **Configuration over code.** Anything that might change between installations
+   or use cases should be in a config file, not in source code.
 
-### 7.1 Why not bundle a diffusion model?
-
-**Evaluated:** Ship with SDXL/Flux/SD1.5 baked in.
-**Rejected:** 
-- Median r/StableDiffusion user has 8-12GB VRAM
-- Adding 6-12GB model download kills adoption
-- Everyone in that community ALREADY runs ComfyUI with their own models
-- Connector pattern: zero VRAM overhead, works with any model
-
-### 7.2 Why not use CLIP for scoring?
-
-**Evaluated:** CLIP text-image similarity as primary score.
-**Rejected:**
-- CLIP saturates on semantic match ("both have a dog" = high score)
-- Completely blind to composition (subject left vs right, framing)
-- DINOv2 captures structural/visual similarity much better
-- CLIP kept as secondary signal only
-
-### 7.3 Why not LLM-only mutation?
-
-**Evaluated:** Send everything to Qwen/GLM for prompt rewriting.
-**Rejected:**
-- Adds latency (2-5s per mutation)
-- Requires API credits or local LLM VRAM
-- Rule-based mutations are deterministic and instant
-- LLM used as fallback when rules plateau, not primary
-
-### 7.4 Why not React/Next.js frontend?
-
-**Evaluated:** Full React app with component library.
-**Rejected:**
-- Adds build step, npm install, bundler complexity
-- cocktailpeanut's tool went viral BECAUSE it was minimal
-- Vanilla JS + ES modules: open index.html, it works
-- Matches the "local tool" ethos of the target community
-
-### 7.5 Why SQLite over PostgreSQL?
-
-**Evaluated:** PostgreSQL (like InsForge DB on ZimaBoard).
-**Rejected:**
-- This is a single-user local tool, not a multi-tenant service
-- SQLite: zero-config, single file, fast FTS5 search
-- Users shouldn't need to install a database
-- Can export to PostgreSQL later if taste model needs scale
-
----
-
-## 8. Security Considerations
-
-- **No outbound network calls** unless user configures API (Qwen-VL, OpenAI)
-- **ComfyUI connector is localhost-only** by default (configurable for Tailscale)
-- **No user data collected** — everything stays on local disk
-- **No telemetry** — no analytics, no crash reporting, no phone home
-- **Safetensors only** — never loads pickle files (deserialization risk)
-
----
-
-## 9. Scalability Path
-
-**Current:** Single-user local tool (v1)
-**Future paths:**
-
-1. **Multi-GPU:** Distribute iterations across GPUs (iter 1 on GPU0, iter 2 on GPU1)
-2. **Taste Model Service:** Train on accumulated iteration data, serve as local API
-3. **Composition Cloud:** Optional sync of anonymized compositions to shared library
-4. **Plugin System:** Third-party scorers, mutators, analyzers via Python entry points
-5. **ComfyUI Node Pack:** Embed as a native ComfyUI node (Stage 3)
-
----
-
-## 10. Dependencies
-
-### Python (server)
-```
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
-websockets>=13.0
-transformers>=4.45.0
-torch>=2.7.0
-torchvision>=0.22.0
-Pillow>=10.0.0
-numpy>=1.26.0
-scikit-learn>=1.5.0  # for DINOv2 embeddings
-aiohttp>=3.10.0
-python-dotenv>=1.0.0
-open-clip-torch>=2.26.0  # CLIP-interrogator vocab
-```
-
-### Optional
-```
-qwen-vl-utils  # for Qwen-VL style extraction
-diffusers      # for safetensors metadata reading
-```
-
-### Frontend
-```
-None. Vanilla JS. No npm. No build step.
-```
-
----
-
-## 11. Project Structure
-
-```
-prompt-forge/
-├── server/
-│   ├── main.py              # FastAPI entry point
-│   ├── config.py            # Settings from .env
-│   ├── analyzer/
-│   │   ├── florence.py      # Florence-2 scene analysis
-│   │   ├── style.py         # CLIP-vocab style extraction
-│   │   └── palette.py       # Color palette sampling
-│   ├── compiler/
-│   │   ├── compiler.py      # JSON → workflow converter
-│   │   ├── templates.py     # Workflow template registry
-│   │   └── capability.py    # ComfyUI capability probe
-│   ├── connector/
-│   │   ├── comfyui.py       # ComfyUI REST + WebSocket client
-│   │   └── progress.py      # Progress forwarding
-│   ├── scorer/
-│   │   ├── scorer.py        # Composite scoring engine
-│   │   ├── compositional.py # Bbox IoU scoring
-│   │   ├── visual.py        # DINOv2 per-region similarity
-│   │   └── heatmap.py       # Region failure attribution
-│   ├── mutator/
-│   │   ├── mutator.py       # Mutation orchestrator
-│   │   ├── rules.py         # Rule-based mutations
-│   │   └── llm.py           # LLM-assisted mutations
-│   ├── forge/
-│   │   ├── engine.py        # Main convergence loop
-│   │   └── session.py       # Session state management
-│   ├── store/
-│   │   ├── database.py      # SQLite operations
-│   │   └── library.py       # Composition library CRUD
-│   └── lora/
-│       └── detector.py      # LoRA scanning + trigger extraction
-├── frontend/
-│   ├── index.html           # Single page
-│   ├── css/
-│   │   └── forge.css        # Dark theme, JetBrains Mono
-│   └── js/
-│       ├── app.js           # Main controller
-│       ├── canvas.js        # Bbox editor + heatmap overlay
-│       ├── iterations.js    # Timeline scrubbing
-│       ├── library.js       # Composition library browser
-│       └── api.js           # REST + WebSocket client
-├── workflows/
-│   └── templates/           # ComfyUI workflow JSONs
-├── scripts/
-│   ├── check_setup.py       # Pre-flight checks
-│   └── install_workflows.py # Install templates to ComfyUI
-├── tests/
-│   ├── test_analyzer.py
-│   ├── test_compiler.py
-│   ├── test_scorer.py
-│   └── test_forge.py
-├── data/                    # Runtime data (gitignored)
-│   ├── forge.db            # SQLite database
-│   ├── outputs/            # Generated images
-│   └── cache/              # Model cache
-├── .env.example
-├── .gitignore
-├── requirements.txt
-├── AGENTS.md
-├── ARCHITECTURE.md
-└── README.md
-```
-
----
-
-## 12. Launch Strategy
-
-### Stage 1: Analyzer + Connector (days)
-- Florence-2 image analysis → structured JSON
-- ComfyUI connector with capability detection
-- LoRA auto-detection and injection
-- Mega-prompt fallback for all models
-- Side-by-side: source image vs generated output
-- **Post:** "Image-to-Prompt, but it generates AND knows your LoRAs"
-
-### Stage 2: Convergence Loop (1-2 weeks)
-- Closed-loop generate → score → mutate → regenerate
-- Per-region heatmap visualization
-- Convergence GIF as hero asset
-- Composition library with search
-- **Post:** "I made it grade its own output and retry until it matches"
-
-### Stage 3: Distribution (month 1)
-- ComfyUI custom node pack (ComfyUI Manager)
-- Pinokio 1-click installer
-- Premium features ($29): advanced mutations, batch forge, export
-- **Product:** "Prompt Forge Pro" on Gumroad
-
----
-
-*This document is the single source of truth for Prompt Forge architecture.*
-*All implementation must conform to these decisions unless explicitly amended.*
+7. **Null-safe by default.** Every component has a null implementation. The system
+   degrades gracefully when components are missing.
