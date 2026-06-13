@@ -10,6 +10,15 @@
     }
   },
   "2": {
+    "class_type": "UnetLoaderGGUF",
+    "inputs": {
+      "unet_name": "ideogram4_unconditional-Q2_K.gguf"
+    },
+    "_meta": {
+      "title": "Load Unconditional Model (GGUF)"
+    }
+  },
+  "3": {
     "class_type": "CLIPLoader",
     "inputs": {
       "clip_name": "qwen3vl_8b_fp8_scaled.safetensors",
@@ -19,92 +28,128 @@
       "title": "Load Ideogram 4 CLIP (Qwen3VL 8B)"
     }
   },
-  "3": {
+  "4": {
     "class_type": "LoraLoader",
     "inputs": {
-      "model": [
-        "1",
-        0
-      ],
-      "clip": [
-        "2",
-        0
-      ],
+      "model": ["1", 0],
+      "clip": ["3", 0],
       "lora_name": "ektachrome_style_v1.safetensors",
       "strength_model": 0.8,
       "strength_clip": 0.8
     },
     "_meta": {
-      "title": "LoRA: Ektachrome Style v1"
-    }
-  },
-  "4": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "clip": [
-        "3",
-        1
-      ],
-      "text": "ektachrome, vintage 1960s Kodak Ektachrome film, faded colors, visible grain, a classified military facility from 1968, concrete tarmac with tripod testing equipment under blue sky, wide angle photograph, archival documentation"
-    },
-    "_meta": {
-      "title": "Encode Prompt (Positive)"
+      "title": "LoRA"
     }
   },
   "5": {
-    "class_type": "ConditioningZeroOut",
+    "class_type": "CLIPTextEncode",
     "inputs": {
-      "conditioning": [
-        "4",
-        0
-      ]
+      "clip": ["4", 1],
+      "text": ""
     },
     "_meta": {
-      "title": "Zero Out (Negative Conditioning)"
+      "title": "Encode Prompt (JSON)"
     }
   },
   "6": {
-    "class_type": "EmptyFlux2LatentImage",
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": ["5", 0]
+    },
+    "_meta": {
+      "title": "Zero Out (Negative)"
+    }
+  },
+  "7": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": ["4", 0],
+      "shift": 5.0
+    },
+    "_meta": {
+      "title": "AuraFlow Noise Schedule"
+    }
+  },
+  "8": {
+    "class_type": "CFGOverride",
+    "inputs": {
+      "model": ["7", 0],
+      "cfg": 3.0,
+      "start_percent": 0.9,
+      "end_percent": 1.0
+    },
+    "_meta": {
+      "title": "CFG Override"
+    }
+  },
+  "9": {
+    "class_type": "DualModelGuider",
+    "inputs": {
+      "model": ["8", 0],
+      "positive": ["5", 0],
+      "cfg": 7.0,
+      "model_negative": ["2", 0],
+      "negative": ["6", 0]
+    },
+    "_meta": {
+      "title": "Dual Model Guider"
+    }
+  },
+  "10": {
+    "class_type": "EmptyLatentImage",
     "inputs": {
       "width": 768,
       "height": 768,
       "batch_size": 1
     },
     "_meta": {
-      "title": "Empty Latent (Flux2 compatible)"
+      "title": "Empty Latent"
     }
   },
-  "7": {
-    "class_type": "KSampler",
+  "11": {
+    "class_type": "RandomNoise",
     "inputs": {
-      "model": [
-        "3",
-        0
-      ],
-      "positive": [
-        "4",
-        0
-      ],
-      "negative": [
-        "5",
-        0
-      ],
-      "latent_image": [
-        "6",
-        0
-      ],
-      "seed": 42,
-      "steps": 30,
-      "cfg": 3.5,
-      "sampler_name": "euler",
+      "noise_seed": 42
+    },
+    "_meta": {
+      "title": "Random Noise"
+    }
+  },
+  "12": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "_meta": {
+      "title": "Sampler Select"
+    }
+  },
+  "13": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": ["8", 0],
       "scheduler": "simple",
+      "steps": 28,
       "denoise": 1.0
     },
     "_meta": {
-      "title": "KSampler (30 steps, euler, simple)"
+      "title": "Scheduler"
     }
   },
-  "8": {
+  "14": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": ["11", 0],
+      "guider": ["9", 0],
+      "sampler": ["12", 0],
+      "sigmas": ["13", 0],
+      "latent_image": ["10", 0]
+    },
+    "_meta": {
+      "title": "Sampler"
+    }
+  },
+  "15": {
     "class_type": "VAELoader",
     "inputs": {
       "vae_name": "flux2-vae.safetensors"
@@ -113,30 +158,21 @@
       "title": "Load VAE (Flux2)"
     }
   },
-  "9": {
+  "16": {
     "class_type": "VAEDecode",
     "inputs": {
-      "samples": [
-        "7",
-        0
-      ],
-      "vae": [
-        "8",
-        0
-      ]
+      "samples": ["14", 0],
+      "vae": ["15", 0]
     },
     "_meta": {
       "title": "VAE Decode"
     }
   },
-  "10": {
+  "17": {
     "class_type": "SaveImage",
     "inputs": {
       "filename_prefix": "forge_ideo4",
-      "images": [
-        "9",
-        0
-      ]
+      "images": ["16", 0]
     },
     "_meta": {
       "title": "Save Image"
