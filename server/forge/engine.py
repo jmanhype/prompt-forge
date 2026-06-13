@@ -86,6 +86,9 @@ class ForgeEngine:
         threshold: Optional[float] = None,
     ) -> AsyncGenerator[ForgeEvent, None]:
         """Run the full forge loop, yielding events as they happen."""
+        import sys
+        print(f"\n[ENGINE] Starting forge with description: '{description}'", file=sys.stderr)
+        
         session_id = str(uuid.uuid4())[:8]
         max_iter = max_iterations or config.MAX_ITERATIONS
         thresh = threshold or config.CONVERGENCE_THRESHOLD
@@ -107,6 +110,7 @@ class ForgeEngine:
             else:
                 # Text mode — parse description into structured prompt
                 prompt_data = await self._parse_text_description(description)
+                print(f"[ENGINE] prompt_data after _parse_text_description: {prompt_data}", file=sys.stderr)
             
             # Inject style if available
             if image:
@@ -127,12 +131,14 @@ class ForgeEngine:
             
             # ── PHASE 2-6: Convergence Loop ──
             current_prompt = prompt_data
+            print(f"[ENGINE] current_prompt before loop: {current_prompt}", file=sys.stderr)
             
             for i in range(max_iter):
                 iteration = Iteration(number=i + 1, prompt=current_prompt)
                 iter_start = time.time()
                 
                 # Compile
+                print(f"[ENGINE] Iteration {i+1}: compiling with prompt: {current_prompt}", file=sys.stderr)
                 yield ForgeEvent(type="generating", data={
                     "iteration": i + 1,
                     "max_iterations": max_iter,
@@ -210,6 +216,7 @@ class ForgeEngine:
                 })
                 
                 current_prompt, changes = self.mutator.mutate(current_prompt, score)
+                print(f"[ENGINE] After mutation: {current_prompt}", file=sys.stderr)
                 iteration.mutations = changes
                 prev_score = score
             
@@ -240,6 +247,9 @@ class ForgeEngine:
             })
         
         except Exception as e:
+            print(f"[ENGINE] ERROR: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             yield ForgeEvent(type="error", data={"message": str(e)})
     
     async def _generate(self, workflow: dict) -> GenerationResult:
@@ -254,13 +264,65 @@ class ForgeEngine:
     
     async def _parse_text_description(self, description: str) -> dict:
         """Parse natural language into structured prompt JSON.
-        Uses simple heuristics — full NLP parsing is TODO.
+        
+        Produces rich 200+ char prompts with CONCRETE visual details.
+        Ideogram 4 needs specific, renderable elements — not abstract concepts.
+        
+        Key formula: subject + concrete setting + specific lighting + photography terms
         """
-        # Simple structured prompt from text
+        # Extract the core subject from the description
+        subject = description.strip()
+        
+        # If already detailed enough, use as-is
+        if len(subject) > 100:
+            caption = subject
+        else:
+            # Short descriptions need enrichment with CONCRETE details
+            # Map common subjects to specific visual settings with TANGIBLE objects
+            setting_map = {
+                "dog": "sitting on green grass in a sunny suburban backyard with a wooden fence",
+                "retriever": "sitting on green grass in a sunny suburban backyard with a wooden fence",
+                "puppy": "sitting on green grass in a sunny suburban backyard with a wooden fence",
+                "cat": "sitting on a wooden windowsill with lace curtains and sunlight streaming in",
+                "kitten": "sitting on a wooden windowsill with lace curtains and sunlight streaming in",
+                "car": "parked on a tree-lined street next to red brick row houses",
+                "person": "standing on a cobblestone sidewalk next to a cafe with potted plants",
+                "woman": "standing on a cobblestone sidewalk next to a cafe with potted plants",
+                "man": "standing on a cobblestone sidewalk next to a cafe with potted plants",
+                "flower": "in a terracotta pot on a rustic wooden garden table with sunflowers behind",
+                "rose": "in a terracotta pot on a rustic wooden garden table with green leaves behind",
+                "building": "a red brick warehouse with large iron-framed windows on a gravel lot",
+                "house": "a charming cottage with a stone path and blooming garden",
+                "mountain": "snow-capped peaks with tall pine trees and a crystal clear lake in front",
+                "ocean": "rocky coastline with crashing blue waves and white seabirds flying overhead",
+                "beach": "sandy shore with turquoise water and palm trees swaying in the breeze",
+                "food": "on a white marble countertop with fresh basil leaves and olive oil bottle",
+                "bird": "perched on a mossy oak branch with soft green forest bokeh behind",
+                "tree": "a large oak tree in a wildflower meadow with daisies and blue sky above",
+                "horse": "standing in a green paddock with white wooden fence and rolling hills behind",
+                "boat": "moored at a wooden dock in a calm blue harbor with colorful houses on shore",
+                "train": "at a vintage railway platform with wrought iron columns and glass roof",
+                "robot": "standing on a polished concrete floor with server racks and LED panels behind",
+                "castle": "on a hilltop surrounded by stone walls and medieval towers against a cloudy sky",
+                "bridge": "a stone arch bridge over a river with autumn trees reflecting in the water",
+            }
+            
+            # Try to match a setting
+            setting = "in a bright outdoor scene with trees and natural light"
+            for key, val in setting_map.items():
+                if key in subject.lower():
+                    setting = val
+                    break
+            
+            caption = (
+                f"{subject} {setting}. "
+                f"Professional photography, sharp focus, natural daylight."
+            )
+        
         return {
-            "caption": description,
+            "caption": caption,
             "composition": {
-                "background": description,
+                "background": f"Background and environment surrounding the subject.",
                 "elements": [],
             },
             "style_description": {},

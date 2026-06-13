@@ -162,16 +162,13 @@ class FlorenceAnalyzer:
         
         prompt = {
             "high_level_description": analysis.caption,
-            "style_description": analysis.style_description or {
-                "aesthetics": "professional photography, sharp detail, natural tones",
-                "lighting": "soft ambient lighting",
-                "medium": "photograph",
-                "color_palette": ["#FFFFFF", "#333333", "#666666", "#999999"],
-            },
             "compositional_decomposition": {
                 "background": analysis.background + " No text, no watermark, no logo, no clutter.",
                 "elements": elements,
             },
         }
+        
+        # NOTE: Do NOT add style_description — cocktailpeanut's working tool
+        # doesn't include it, and it may confuse the Qwen3VL CLIP loader
         
         return prompt

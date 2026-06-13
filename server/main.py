@@ -6,7 +6,7 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -112,38 +112,43 @@ from pydantic import BaseModel
 
 class ForgeRequest(BaseModel):
     description: str = ""
+    prompt: str = ""  # Alias for description
     max_iterations: int = 5
     threshold: float = config.CONVERGENCE_THRESHOLD
+    
+    def get_description(self) -> str:
+        """Return description or prompt, whichever is non-empty."""
+        return self.description or self.prompt
 
 @app.post("/api/forge")
-async def start_forge(
-    request: ForgeRequest = None,
-    description: str = Form(""),
-    file: UploadFile = File(None),
-    max_iterations: int = Form(None),
-    threshold: float = Form(None),
-):
+async def start_forge(request: Request):
     """Start a forge session. Accepts JSON body or form data. Returns session_id for WebSocket."""
     session_id = str(uuid.uuid4())[:8]
     
-    # Prefer JSON body, fall back to form data
     desc = ""
     max_iter = 5
     thresh = config.CONVERGENCE_THRESHOLD
-    
-    if request:
-        desc = request.description or description
-        max_iter = request.max_iterations if request.max_iterations else (max_iterations or 5)
-        thresh = request.threshold if request.threshold else (threshold or config.CONVERGENCE_THRESHOLD)
-    else:
-        desc = description
-        max_iter = max_iterations or 5
-        thresh = threshold or config.CONVERGENCE_THRESHOLD
-    
     image = None
-    if file:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents))
+    
+    content_type = request.headers.get("content-type", "")
+    
+    if "application/json" in content_type:
+        body = await request.json()
+        desc = body.get("description", "") or body.get("prompt", "")
+        max_iter = body.get("max_iterations", 5)
+        thresh = body.get("threshold", config.CONVERGENCE_THRESHOLD)
+    else:
+        form = await request.form()
+        desc = form.get("description", "") or form.get("prompt", "")
+        max_iter = int(form.get("max_iterations", 5))
+        thresh = float(form.get("threshold", config.CONVERGENCE_THRESHOLD))
+        file = form.get("file")
+        if file:
+            contents = await file.read()
+            image = Image.open(io.BytesIO(contents))
+    
+    if not desc:
+        raise HTTPException(status_code=400, detail="description or prompt is required")
     
     session = sessions.create(session_id, desc)
     session.status = "running"

@@ -61,7 +61,7 @@ class LoRADetector:
         triggers = []
         name_part = re.split(r'[_-](?:style|v\d|lora|sdxl|sd15)', stem.lower())[0]
         name_part = name_part.replace("_", " ").replace("-", " ").strip()
-        if name_part:
+        if name_part and len(name_part) >= 3:  # Skip single/double char triggers (e.g., "id")
             triggers = [name_part]
         
         # Infer style tags from filename
@@ -165,7 +165,9 @@ class LoRADetector:
         search_text += " " + caption
         
         for trigger, lora in self._trigger_map.items():
-            if trigger in search_text:
+            # Use word boundary matching to avoid false positives
+            # e.g., "id" should not match "middle"
+            if re.search(r'\b' + re.escape(trigger) + r'\b', search_text):
                 return {
                     "lora_name": lora.filename,
                     "trigger_words": lora.trigger_words,
@@ -176,7 +178,7 @@ class LoRADetector:
         # Check style tags
         for lora in self._loras:
             for tag in lora.style_tags:
-                if tag in search_text:
+                if re.search(r'\b' + re.escape(tag) + r'\b', search_text):
                     return {
                         "lora_name": lora.filename,
                         "trigger_words": lora.trigger_words,

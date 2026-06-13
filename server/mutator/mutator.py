@@ -14,9 +14,15 @@ class Mutator:
     def mutate(self, prompt: dict, score) -> tuple[dict, list[str]]:
         """Apply targeted mutations to fix lowest-scoring regions.
         Returns (mutated_prompt, list_of_changes).
+        
+        CRITICAL: Never strip or replace the original caption.
+        Only APPEND detail to it.
         """
         changes = []
         mutated = _deep_copy(prompt)
+        
+        # Store the original caption so we can protect it
+        original_caption = mutated.get("caption", "")
 
         # Get mutations from rule engine based on score
         mutations = self.rule_mutator.get_mutations(score, mutated)
@@ -28,6 +34,15 @@ class Mutator:
 
         if not changes:
             changes = ["No mutations needed — all scores above threshold"]
+
+        # PROTECT THE CAPTION: ensure the original subject is still present
+        new_caption = mutated.get("caption", "")
+        # Extract the core subject (first sentence of original)
+        core_subject = original_caption.split(".")[0].strip()
+        if core_subject and core_subject.lower() not in new_caption.lower():
+            # The mutator destroyed the subject — restore it
+            mutated["caption"] = original_caption
+            changes.append(f"RESTORED original subject (was lost during mutation)")
 
         return mutated, changes
 

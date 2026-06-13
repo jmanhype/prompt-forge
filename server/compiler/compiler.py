@@ -92,110 +92,58 @@ class WorkflowCompiler:
         return workflow
 
     def _build_prompt_text(self, prompt: dict, lora_config: Optional[dict]) -> str:
-        """Build Ideogram 4 native JSON prompt from structured data.
+        """Build plain text prompt for Ideogram 4.
         
-        Ideogram 4's Qwen3VL CLIP loader parses structured JSON with:
-        - high_level_description: 1-2 sentence overview
-        - style_description: aesthetics, lighting, medium, color palette
-        - compositional_deconstruction: background + elements with bboxes
+        Based on verified working benchmark prompts — plain sentences work best:
+        "A golden retriever sitting in the middle of an empty concrete testing 
+        facility. Flat overcast lighting. Static tripod wide shot. Documented on 
+        archival 16mm Ektachrome film, cyan shadow shift, visible luminance film 
+        grain, flat scientific observation framing."
         
-        This gives much better composition control and avoids safety filter
-        false-positives from ambiguous plain text.
+        Key formula: subject + location + lighting + camera + medium/film
         """
-        import json as _json
+        import sys
         
-        # Build style_description
-        style = prompt.get("style_description", {})
-        if not style:
-            # Infer from prompt data or use sensible defaults
-            style = {
-                "aesthetics": "professional photography, sharp detail, natural tones",
-                "lighting": "soft ambient lighting",
-                "medium": "photograph",
-                "color_palette": ["#FFFFFF", "#333333", "#666666", "#999999"],
-            }
+        # Extract caption from either format (legacy or cocktailpeanut)
+        caption = prompt.get("caption") or prompt.get("high_level_description", "")
         
-        # Ensure color_palette exists and is valid
-        if "color_palette" not in style:
-            style["color_palette"] = ["#FFFFFF", "#333333", "#666666"]
+        # Extract elements from either format
+        elements = []
+        comp = prompt.get("composition") or prompt.get("compositional_decomposition", {})
+        if isinstance(comp, dict):
+            elements = comp.get("elements", [])
         
-        # Build high_level_description
-        caption = prompt.get("caption", "")
-        if not caption:
-            # Build from elements
-            elements = prompt.get("composition", {}).get("elements", [])
-            subjects = [e.get("desc", e.get("description", "")) for e in elements[:3] if e.get("desc") or e.get("description")]
-            caption = ", ".join(subjects) if subjects else "a photograph"
+        print(f"\n[COMPILER] caption ({len(caption)} chars): '{caption[:80]}...'", file=sys.stderr)
         
-        # Add LoRA trigger words to description
-        trigger_prefix = ""
-        if lora_config:
-            triggers = lora_config.get("trigger_words", [])
-            if triggers:
-                trigger_prefix = ", ".join(triggers) + ", "
-        
-        high_level = trigger_prefix + caption if trigger_prefix else caption
-        
-        # Build compositional_deconstruction
-        bg = prompt.get("composition", {}).get("background", "")
-        if not bg:
-            bg = caption  # fallback
-        
-        # Build elements with proper Ideogram 4 format
-        ideo_elements = []
-        raw_elements = prompt.get("composition", {}).get("elements", [])
-        
-        for i, elem in enumerate(raw_elements):
-            elem_type = elem.get("type", "obj")
-            desc = elem.get("desc", elem.get("description", elem.get("label", "")))
+        # If caption is already rich (200+ chars, has sentences), use it directly
+        if len(caption) > 100 and "." in caption:
+            result = caption
+        else:
+            # Build a rich prompt from parts
+            parts = []
             
-            if not desc:
-                continue
+            # LoRA trigger words first
+            if lora_config:
+                triggers = lora_config.get("trigger_words", [])
+                if triggers:
+                    parts.append(", ".join(triggers))
             
-            entry = {"type": elem_type}
+            # Subject (the caption)
+            if caption:
+                parts.append(caption if len(caption) > 20 else f"A photograph of {caption}")
             
-            # Add bbox (convert normalized 0-1 to Ideogram's 0-1000 coordinate system)
-            bbox = elem.get("bbox")
-            if bbox and len(bbox) == 4:
-                # Input is [x1, y1, x2, y2] normalized 0-1
-                # Ideogram expects [y_min, x_min, y_max, x_max] in 0-1000
-                x1, y1, x2, y2 = bbox
-                entry["bbox"] = [
-                    round(y1 * 1000),
-                    round(x1 * 1000),
-                    round(y2 * 1000),
-                    round(x2 * 1000),
-                ]
+            # Element descriptions
+            for elem in elements:
+                desc = elem.get("desc", elem.get("description", ""))
+                if desc and desc not in caption:
+                    parts.append(desc)
             
-            if elem_type == "text":
-                entry["text"] = elem.get("text", desc)
-                entry["desc"] = f"Typography: {desc}"
-            else:
-                entry["desc"] = desc
-            
-            # Color palette per element
-            colors = elem.get("color_palette")
-            if colors:
-                entry["color_palette"] = colors
-            
-            ideo_elements.append(entry)
+            result = ". ".join(parts) if parts else "a detailed photograph"
         
-        # If no elements, create a basic one from the caption
-        if not ideo_elements:
-            ideo_elements.append({
-                "type": "obj",
-                "bbox": [200, 200, 800, 800],  # centered
-                "desc": caption,
-            })
+        # Add LoRA film characteristics if applicable
+        if lora_config and "ektachrome" in str(lora_config).lower():
+            if "Ektachrome" not in result and "ektachrome" not in result:
+                result += ". Documented on archival 16mm Ektachrome film, cyan shadow shift, visible luminance film grain, flat scientific observation framing."
         
-        # Assemble the full Ideogram 4 JSON prompt
-        ideo_prompt = {
-            "high_level_description": high_level,
-            "style_description": style,
-            "compositional_deconstruction": {
-                "background": bg + " No text, no watermark, no logo, no clutter.",
-                "elements": ideo_elements,
-            }
-        }
-        
-        return _json.dumps(ideo_prompt)
+        print(f"[COMPILER] final prompt ({len(result)} chars): '{result[:100]}...'", file=sys.stderr)
+        return result

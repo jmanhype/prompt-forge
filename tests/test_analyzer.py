@@ -68,11 +68,13 @@ class TestFlorenceAnalyzer:
         result = analyzer.to_ideogram_json(analysis)
         assert "high_level_description" in result
         assert result["high_level_description"] == "A red car on a street"
-        assert "style_description" in result
         assert "compositional_decomposition" in result
         assert "background" in result["compositional_decomposition"]
         assert "elements" in result["compositional_decomposition"]
         assert len(result["compositional_decomposition"]["elements"]) == 1
+        
+        # style_description should NOT be present (cocktailpeanut format)
+        assert "style_description" not in result
         
         # Check bbox is in correct Ideogram 4 format: [y_min, x_min, y_max, x_max] in 0-1000
         elem = result["compositional_decomposition"]["elements"][0]
