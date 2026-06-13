@@ -16,7 +16,6 @@ from ..analyzer.palette import extract_palette
 from ..compiler.compiler import WorkflowCompiler
 from ..connector.comfyui import ComfyUIConnector, GenerationResult, ProgressUpdate
 from ..scorer.scorer import Scorer, ForgeScore
-from ..scorer.heatmap import generate_heatmap_data
 from ..mutator.mutator import Mutator
 from ..mutator.llm import llm_mutate
 from ..store.database import Database

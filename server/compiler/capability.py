@@ -4,6 +4,8 @@ from __future__ import annotations
 import aiohttp
 from dataclasses import dataclass, field
 
+from ..patterns.registry import NodeRegistry
+
 
 @dataclass
 class ComfyUICapabilities:
@@ -47,23 +49,12 @@ class ComfyUICapabilities:
     @property
     def strategy_description(self) -> str:
         descs = {
-            "ideogram4": "Ideogram 4.0 + LoRA (correct architecture for Ektachrome)",
+            "ideogram4": "Ideogram 4.0 + LoRA",
             "flux": "Flux Dev + mega-prompt + LoRA",
             "gligen": "GLIGEN native bbox conditioning (SD1.5)",
             "mega_prompt": "Structured mega-prompt (no regional nodes)",
         }
         return descs.get(self.best_strategy, "Unknown")
-
-
-NODE_SIGNATURES = {
-    "has_gligen": ["GLIGENLoader", "GLIGENTextBoxApply"],
-    "has_attention_couple": ["AttentionCouple", "AttentionCoupleBase"],
-    "has_ipadapter_region": ["IPAdapterRegionalConditioning", "IPAdapterRegional"],
-    "has_flux_guidance": ["FluxGuidance", "FluxDisableGuidance"],
-    "has_regional_condition": ["RegionalConditioning", "RegionalPrompter", "RegionalSampler"],
-    "has_flux": ["CLIPTextEncodeFlux", "ModelSamplingFlux"],
-    "has_ideogram4": ["IdeogramV4", "Ideogram4Scheduler"],
-}
 
 
 async def probe_capabilities(comfyui_url: str) -> ComfyUICapabilities:
@@ -80,10 +71,12 @@ async def probe_capabilities(comfyui_url: str) -> ComfyUICapabilities:
     except Exception:
         return caps
     
-    # Check node signatures
+    # Check node signatures using NodeRegistry
     node_names = set(caps.raw_nodes.keys())
-    for cap_name, signatures in NODE_SIGNATURES.items():
-        if any(sig in node_names for sig in signatures):
+    node_registry = NodeRegistry()
+    for cap_name in ["has_gligen", "has_attention_couple", "has_ipadapter_region", 
+                     "has_flux_guidance", "has_regional_condition", "has_flux", "has_ideogram4"]:
+        if node_registry.check_capability(cap_name, node_names):
             setattr(caps, cap_name, True)
     
     # Extract available checkpoints from CheckpointLoaderSimple
